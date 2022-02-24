@@ -64,7 +64,7 @@ namespace NBXplorer
 		public ScanUTXOSetService(ScanUTXOSetServiceAccessor accessor,
 								  RPCClientProvider rpcClients,
 								  KeyPathTemplates keyPathTemplates,
-								  RepositoryProvider repositories)
+								  IRepositoryProvider repositories)
 		{
 			accessor.Instance = this;
 			RpcClients = rpcClients;
@@ -116,7 +116,7 @@ namespace NBXplorer
 		private readonly KeyPathTemplates keyPathTemplates;
 
 		public RPCClientProvider RpcClients { get; }
-		public RepositoryProvider Repositories { get; }
+		public IRepositoryProvider Repositories { get; }
 
 		public Task StartAsync(CancellationToken cancellationToken)
 		{
@@ -238,7 +238,7 @@ namespace NBXplorer
 			}
 		}
 
-		private async Task UpdateRepository(RPCClient client, DerivationSchemeTrackedSource trackedSource, Repository repo, ScanTxoutOutput[] outputs, ScannedItems scannedItems, ScanUTXOProgress progressObj)
+		private async Task UpdateRepository(RPCClient client, DerivationSchemeTrackedSource trackedSource, IRepository repo, ScanTxoutOutput[] outputs, ScannedItems scannedItems, ScanUTXOProgress progressObj)
 		{
 			var clientBatch = client.PrepareBatch();
 			var blockIdsByHeight = new ConcurrentDictionary<int, uint256>();

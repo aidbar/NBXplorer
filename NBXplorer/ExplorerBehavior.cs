@@ -31,7 +31,7 @@ namespace NBXplorer
 	}
 	public class ExplorerBehavior : NodeBehavior
 	{
-		public ExplorerBehavior(Repository repo, SlimChain chain, AddressPoolService addressPoolService, EventAggregator eventAggregator)
+		public ExplorerBehavior(IRepository repo, SlimChain chain, AddressPoolService addressPoolService, EventAggregator eventAggregator)
 		{
 			if (repo == null)
 				throw new ArgumentNullException(nameof(repo));
@@ -48,7 +48,7 @@ namespace NBXplorer
 		CancellationTokenSource _Cts = new CancellationTokenSource();
 		EventAggregator _EventAggregator;
 
-		Repository Repository
+		IRepository Repository
 		{
 			get
 			{
@@ -57,7 +57,7 @@ namespace NBXplorer
 		}
 
 		private readonly SlimChain _Chain;
-		private readonly Repository _Repository;
+		private readonly IRepository _Repository;
 
 		public SlimChain Chain
 		{

@@ -73,6 +73,7 @@ namespace NBXplorer.Configuration
 			app.Option("--cachechain", $"Whether the chain of header is locally cached for faster startup (default: true)", CommandOptionType.SingleValue);
 			app.Option("--rpcnotest", $"Faster start because RPC connection testing skipped (default: false)", CommandOptionType.SingleValue);
 			app.Option("--exposerpc", $"Expose the node RPC through the REST API (default: false)", CommandOptionType.SingleValue);
+			app.Option("--postgres", $"Connection string of the postgres backend", CommandOptionType.SingleValue);
 			app.Option("-v | --verbose", $"Verbose logs (default: true)", CommandOptionType.SingleValue);
 			return app;
 		}

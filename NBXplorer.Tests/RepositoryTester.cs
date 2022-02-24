@@ -44,8 +44,8 @@ namespace NBXplorer.Tests
 			ServerTester.DeleteFolderRecursive(_Name);
 		}
 
-		private Repository _Repository;
-		public Repository Repository
+		private IRepository _Repository;
+		public IRepository Repository
 		{
 			get
 			{

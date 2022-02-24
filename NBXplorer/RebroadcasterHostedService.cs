@@ -85,13 +85,13 @@ namespace NBXplorer
 			}
 		}
 
-		RepositoryProvider _Repositories;
+		IRepositoryProvider _Repositories;
 		private BitcoinDWaiters _Waiters;
 		Dictionary<NBXplorerNetwork, RebroadcastedTransactions> _BroadcastedTransactionsByCryptoCode;
 		public RebroadcasterHostedService(
 			NBXplorerNetworkProvider networkProvider,
 			ExplorerConfiguration configuration, 
-			RepositoryProvider repositories, BitcoinDWaiters waiters, EventAggregator eventAggregator)
+			IRepositoryProvider repositories, BitcoinDWaiters waiters, EventAggregator eventAggregator)
 		{
 			_Repositories = repositories;
 			_Waiters = waiters;

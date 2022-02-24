@@ -33,7 +33,7 @@ namespace NBXplorer
 		private readonly AddressPoolService addressPool;
 		private readonly NBXplorerNetworkProvider networkProvider;
 		private readonly ChainProvider chains;
-		private readonly RepositoryProvider repositoryProvider;
+		private readonly IRepositoryProvider repositoryProvider;
 		private readonly ExplorerConfiguration config;
 		private readonly RPCClientProvider rpcProvider;
 		private readonly EventAggregator eventAggregator;
@@ -42,7 +42,7 @@ namespace NBXplorer
 							AddressPoolService addressPool,
 							  NBXplorerNetworkProvider networkProvider,
 							  ChainProvider chains,
-							  RepositoryProvider repositoryProvider,
+							  IRepositoryProvider repositoryProvider,
 							  ExplorerConfiguration config,
 							  RPCClientProvider rpcProvider,
 							  EventAggregator eventAggregator)
@@ -113,7 +113,7 @@ namespace NBXplorer
 			ExplorerConfiguration configuration,
 			NBXplorerNetwork network,
 			SlimChain chain,
-			Repository repository,
+			IRepository repository,
 			AddressPoolService addressPoolService,
 			EventAggregator eventAggregator)
 		{

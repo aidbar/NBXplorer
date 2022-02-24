@@ -34,7 +34,7 @@ namespace NBXplorer.Tests
 		public UnitTest1(ITestOutputHelper helper)
 		{
 			Logs.Tester = new XUnitLog(helper) { Name = "Tests" };
-			Logs.LogProvider = new XUnitLogProvider(helper);
+			Logs.LogProvider = new XUnitLoggerProvider(helper);
 		}
 		NBXplorerNetworkProvider _Provider = new NBXplorerNetworkProvider(ChainName.Regtest);
 		private NBXplorerNetwork GetNetwork(INetworkSet network)
@@ -266,7 +266,7 @@ namespace NBXplorer.Tests
 			Assert.Null(keyInfo);
 		}
 
-		private static void MarkAsUsed(Repository repository, DerivationStrategyBase strat, KeyPath keyPath)
+		private static void MarkAsUsed(IRepository repository, DerivationStrategyBase strat, KeyPath keyPath)
 		{
 			var tx = repository.Network.NBitcoinNetwork.Consensus.ConsensusFactory.CreateTransaction();
 			repository.SaveMatches(new[] {
@@ -2603,10 +2603,12 @@ namespace NBXplorer.Tests
 			}
 		}
 
-		[Fact]
-		public void CanTrack()
+		[Theory(Timeout = 20_000)]
+		[InlineData(1)]
+		[InlineData(2)]
+		public void CanTrack(int version)
 		{
-			using (var tester = ServerTester.Create())
+			using (var tester = ServerTester.Create(version))
 			{
 				var key = new BitcoinExtKey(new ExtKey(), tester.Network);
 				var pubkey = tester.CreateDerivationStrategy(key.Neuter());
@@ -3657,7 +3659,7 @@ namespace NBXplorer.Tests
 				Assert.Equal(masterKey.GetWif(tester.Network), wallet.MasterHDKey);
 				Assert.Equal(masterKey.Derive(wallet.AccountKeyPath).Neuter().GetWif(tester.Network).ToString() + "-[p2sh]",
 					wallet.DerivationScheme.ToString());
-				var repo = tester.GetService<RepositoryProvider>().GetRepository(tester.Client.Network);
+				var repo = tester.GetService<IRepositoryProvider>().GetRepository(tester.Client.Network);
 				Assert.Equal(wallet.DerivationScheme.GetExtPubKeys().Single().PubKey, wallet.AccountHDKey.GetPublicKey());
 				Logs.Tester.LogInformation("Let's assert it is tracked");
 				var firstKeyInfo = repo.GetKeyInformation(wallet.DerivationScheme.GetChild(new KeyPath("0/0")).GetDerivation().ScriptPubKey);

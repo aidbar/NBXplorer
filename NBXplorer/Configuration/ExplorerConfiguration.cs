@@ -86,7 +86,7 @@ namespace NBXplorer.Configuration
 		{
 			get; set;
 		} = 20;
-
+		public bool UseDatabase { get; set; }
 		public int MaxGapSize
 		{
 			get; set;
@@ -110,7 +110,6 @@ namespace NBXplorer.Configuration
 				if(!Directory.Exists(defaultSettings.DefaultDataDirectory))
 					Directory.CreateDirectory(defaultSettings.DefaultDataDirectory);
 			}
-
 			Logs.Configuration.LogInformation("Network: " + NetworkProvider.NetworkType.ToString());
 			var supportedChains = config.GetOrDefault<string>("chains", "btc")
 									  .Split(',', StringSplitOptions.RemoveEmptyEntries)
@@ -214,7 +213,7 @@ namespace NBXplorer.Configuration
 			RabbitMqPassword = config.GetOrDefault<string>("rmqpass", "");
 			RabbitMqTransactionExchange = config.GetOrDefault<string>("rmqtranex", "");
 			RabbitMqBlockExchange = config.GetOrDefault<string>("rmqblockex", "");
-
+			UseDatabase = config.ISNBXplorerV2();
 			return this;
 		}
 

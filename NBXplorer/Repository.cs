@@ -39,7 +39,7 @@ namespace NBXplorer
 		public int? MinAddresses { get; set; }
 		public int? MaxAddresses { get; set; }
 	}
-	public class RepositoryProvider : IHostedService
+	public class RepositoryProvider : IHostedService, IRepositoryProvider
 	{
 		DBTrie.DBTrieEngine _Engine;
 		Dictionary<string, Repository> _Repositories = new Dictionary<string, Repository>();
@@ -59,12 +59,12 @@ namespace NBXplorer
 			return _Configuration.ChainConfigurations.FirstOrDefault(c => c.CryptoCode == net.CryptoCode);
 		}
 
-		public Repository GetRepository(string cryptoCode)
+		public IRepository GetRepository(string cryptoCode)
 		{
 			_Repositories.TryGetValue(cryptoCode, out Repository repository);
 			return repository;
 		}
-		public Repository GetRepository(NBXplorerNetwork network)
+		public IRepository GetRepository(NBXplorerNetwork network)
 		{
 			return GetRepository(network.CryptoCode);
 		}
@@ -182,7 +182,7 @@ namespace NBXplorer
 		private async ValueTask<DBTrieEngine> OpenEngine(string directory, CancellationToken cancellationToken)
 		{
 			int tried = 0;
-		retry:
+			retry:
 			try
 			{
 				return await DBTrie.DBTrieEngine.OpenFromFolder(directory);
@@ -207,10 +207,8 @@ namespace NBXplorer
 		}
 	}
 
-	public class Repository
+	public class Repository : IRepository
 	{
-
-
 		public async Task Ping()
 		{
 			using var tx = await engine.OpenTransaction();
@@ -1221,7 +1219,7 @@ namespace NBXplorer
 			await tx.Commit();
 		}
 
-		internal async Task Prune(TrackedSource trackedSource, IEnumerable<TrackedTransaction> prunable)
+		public async Task Prune(TrackedSource trackedSource, IEnumerable<TrackedTransaction> prunable)
 		{
 			if (prunable == null)
 				return;
@@ -1242,7 +1240,7 @@ namespace NBXplorer
 			await tx.Commit();
 		}
 
-		internal async Task UpdateAddressPool(DerivationSchemeTrackedSource trackedSource, Dictionary<DerivationFeature, int?> highestKeyIndexFound)
+		public async Task UpdateAddressPool(DerivationSchemeTrackedSource trackedSource, Dictionary<DerivationFeature, int?> highestKeyIndexFound)
 		{
 			using var tx = await engine.OpenTransaction();
 			foreach (var kv in highestKeyIndexFound)

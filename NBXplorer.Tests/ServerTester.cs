@@ -30,13 +30,18 @@ namespace NBXplorer.Tests
 	{
 		private readonly string _Directory;
 
+		public static ServerTester Create(int version, [CallerMemberNameAttribute] string caller = null)
+		{
+			return new ServerTester(version, caller);
+		}
+
 		public static ServerTester Create([CallerMemberNameAttribute]string caller = null)
 		{
-			return new ServerTester(caller);
+			return Create(1, caller);
 		}
 		public static ServerTester CreateNoAutoStart([CallerMemberNameAttribute]string caller = null)
 		{
-			return new ServerTester(caller, false);
+			return new ServerTester(1, caller, false);
 		}
 
 		public void Dispose()
@@ -61,8 +66,9 @@ namespace NBXplorer.Tests
 		}
 
 		public string Caller { get; }
-		public ServerTester(string directory, bool autoStart = true)
+		public ServerTester(int version, string directory, bool autoStart = true)
 		{
+			Version = version;
 			SetEnvironment();
 			Caller = directory;
 			var rootTestData = "TestData";
@@ -132,6 +138,12 @@ namespace NBXplorer.Tests
 			var port = CustomServer.FreeTcpPort();
 			List<(string key, string value)> keyValues = new List<(string key, string value)>();
 			keyValues.Add(("conf", Path.Combine(datadir, "settings.config")));
+			if (Version == 2)
+			{
+				var dbName = $"dbtest{RandomUtils.GetUInt32()}";
+				var connectionString = $"User ID=postgres;Host=localhost;Include Error Detail=true;Port=39383;Database={dbName}";
+				keyValues.Add(("postgres", connectionString));
+			}
 			keyValues.Add(("datadir", datadir));
 			keyValues.Add(("port", port.ToString()));
 			keyValues.Add(("network", "regtest"));
@@ -396,6 +408,7 @@ namespace NBXplorer.Tests
 		} = true;
 		public bool KeepPreviousData { get; set; }
 		public bool LoadedData { get; private set; }
+		public int Version { get; set; }
 
 		public uint256 SendToAddress(BitcoinAddress address, Money amount)
 		{

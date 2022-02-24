@@ -32,7 +32,7 @@ namespace NBXplorer.Controllers
 		JsonSerializerSettings _SerializerSettings;
 		public MainController(
 			ExplorerConfiguration explorerConfiguration,
-			RepositoryProvider repositoryProvider,
+			IRepositoryProvider repositoryProvider,
 			ChainProvider chainProvider,
 			EventAggregator eventAggregator,
 			BitcoinDWaiters waiters,
@@ -70,7 +70,7 @@ namespace NBXplorer.Controllers
 			get;
 		}
 		public ExplorerConfiguration ExplorerConfiguration { get; }
-		public RepositoryProvider RepositoryProvider
+		public IRepositoryProvider RepositoryProvider
 		{
 			get;
 			private set;
@@ -140,6 +140,7 @@ namespace NBXplorer.Controllers
 
 		[HttpGet]
 		[Route("cryptos/{cryptoCode}/derivations/{strategy}/addresses/unused")]
+		[VersionConstraint(NBXplorerVersion.V1)]
 		public async Task<IActionResult> GetUnusedAddress(
 			string cryptoCode,
 			[ModelBinder(BinderType = typeof(DerivationStrategyModelBinder))]
@@ -173,6 +174,7 @@ namespace NBXplorer.Controllers
 
 		[HttpPost]
 		[Route("cryptos/{cryptoCode}/derivations/{strategy}/addresses/cancelreservation")]
+		[VersionConstraint(NBXplorerVersion.V1)]
 		public async Task<IActionResult> CancelReservation(string cryptoCode,
 			[ModelBinder(BinderType = typeof(DerivationStrategyModelBinder))]
 			DerivationStrategyBase strategy, [FromBody] KeyPath[] keyPaths)
@@ -185,6 +187,7 @@ namespace NBXplorer.Controllers
 
 		[HttpGet]
 		[Route("cryptos/{cryptoCode}/scripts/{script}")]
+		[VersionConstraint(NBXplorerVersion.V1)]
 		public async Task<IActionResult> GetKeyInformations(string cryptoCode,
 			[ModelBinder(BinderType = typeof(ScriptModelBinder))] Script script)
 		{
@@ -198,6 +201,7 @@ namespace NBXplorer.Controllers
 
 		[HttpGet]
 		[Route("cryptos/{cryptoCode}/derivations/{strategy}/scripts/{script}")]
+		[VersionConstraint(NBXplorerVersion.V1)]
 		public async Task<IActionResult> GetKeyInformations(string cryptoCode,
 			[ModelBinder(BinderType = typeof(DerivationStrategyModelBinder))]
 			DerivationStrategyBase strategy,
@@ -221,7 +225,6 @@ namespace NBXplorer.Controllers
 			var network = GetNetwork(cryptoCode, false);
 			var waiter = Waiters.GetWaiter(network);
 			var chain = ChainProvider.GetChain(network);
-			var repo = RepositoryProvider.GetRepository(network);
 
 			var location = waiter.GetLocation();
 			GetBlockchainInfoResponse blockchainInfo = null;
@@ -283,6 +286,7 @@ namespace NBXplorer.Controllers
 			if (status.IsFullySynched)
 			{
 				var now = DateTimeOffset.UtcNow;
+				var repo = RepositoryProvider.GetRepository(network);
 				await repo.Ping();
 				var pingAfter = DateTimeOffset.UtcNow;
 				status.RepositoryPingTime = (pingAfter - now).TotalSeconds;
@@ -515,6 +519,7 @@ namespace NBXplorer.Controllers
 		[HttpPost]
 		[Route("cryptos/{cryptoCode}/derivations/{derivationScheme}")]
 		[Route("cryptos/{cryptoCode}/addresses/{address}")]
+		[VersionConstraint(NBXplorerVersion.V1)]
 		public async Task<IActionResult> TrackWallet(
 			string cryptoCode,
 			[ModelBinder(BinderType = typeof(DerivationStrategyModelBinder))]
@@ -582,6 +587,7 @@ namespace NBXplorer.Controllers
 		[HttpGet]
 		[Route("cryptos/{cryptoCode}/derivations/{derivationScheme}/transactions/{txId?}")]
 		[Route("cryptos/{cryptoCode}/addresses/{address}/transactions/{txId?}")]
+		[VersionConstraint(NBXplorerVersion.V1)]
 		public async Task<IActionResult> GetTransactions(
 			string cryptoCode,
 			[ModelBinder(BinderType = typeof(DerivationStrategyModelBinder))]
@@ -683,6 +689,7 @@ namespace NBXplorer.Controllers
 
 		[HttpPost]
 		[Route("cryptos/{cryptoCode}/rescan")]
+		[VersionConstraint(NBXplorerVersion.V1)]
 		public async Task<IActionResult> Rescan(string cryptoCode, [FromBody] JObject body)
 		{
 			if (body == null)
@@ -776,6 +783,7 @@ namespace NBXplorer.Controllers
 
 		[HttpPost]
 		[Route("cryptos/{cryptoCode}/derivations/{derivationScheme}/metadata/{key}")]
+		[VersionConstraint(NBXplorerVersion.V1)]
 		public async Task<IActionResult> SetMetadata(string cryptoCode,
 			[ModelBinder(BinderType = typeof(DerivationStrategyModelBinder))]
 			DerivationStrategyBase derivationScheme, string key,
@@ -790,6 +798,7 @@ namespace NBXplorer.Controllers
 		}
 		[HttpGet]
 		[Route("cryptos/{cryptoCode}/derivations/{derivationScheme}/metadata/{key}")]
+		[VersionConstraint(NBXplorerVersion.V1)]
 		public async Task<IActionResult> GetMetadata(string cryptoCode,
 			[ModelBinder(BinderType = typeof(DerivationStrategyModelBinder))]
 			DerivationStrategyBase derivationScheme, string key)
@@ -805,6 +814,7 @@ namespace NBXplorer.Controllers
 
 		[HttpPost]
 		[Route("cryptos/{cryptoCode}/derivations/{derivationScheme}/utxos/wipe")]
+		[VersionConstraint(NBXplorerVersion.V1)]
 		public async Task<IActionResult> Wipe(
 			string cryptoCode,
 			[ModelBinder(BinderType = typeof(DerivationStrategyModelBinder))]
@@ -821,6 +831,7 @@ namespace NBXplorer.Controllers
 
 		[HttpPost]
 		[Route("cryptos/{cryptoCode}/derivations/{derivationScheme}/utxos/scan")]
+		[VersionConstraint(NBXplorerVersion.V1)]
 		public IActionResult ScanUTXOSet(
 			string cryptoCode,
 			[ModelBinder(BinderType = typeof(DerivationStrategyModelBinder))]
@@ -860,6 +871,7 @@ namespace NBXplorer.Controllers
 		[HttpGet]
 		[Route("cryptos/{cryptoCode}/derivations/{derivationScheme}/balance")]
 		[Route("cryptos/{cryptoCode}/addresses/{address}/balance")]
+		[VersionConstraint(NBXplorerVersion.V1)]
 		public async Task<IActionResult> GetBalance(string cryptoCode,
 			[ModelBinder(BinderType = typeof(DerivationStrategyModelBinder))]
 			DerivationStrategyBase derivationScheme,
@@ -899,6 +911,7 @@ namespace NBXplorer.Controllers
 		[HttpGet]
 		[Route("cryptos/{cryptoCode}/derivations/{derivationScheme}/utxos")]
 		[Route("cryptos/{cryptoCode}/addresses/{address}/utxos")]
+		[VersionConstraint(NBXplorerVersion.V1)]
 		public async Task<IActionResult> GetUTXOs(
 			string cryptoCode,
 			[ModelBinder(BinderType = typeof(DerivationStrategyModelBinder))]
@@ -923,8 +936,6 @@ namespace NBXplorer.Controllers
 			changes.Confirmed = ToUTXOChange(transactions.ConfirmedState);
 			changes.Confirmed.SpentOutpoints.Clear();
 			changes.Unconfirmed = ToUTXOChange(transactions.UnconfirmedState - transactions.ConfirmedState);
-
-
 
 			FillUTXOsInformation(changes.Confirmed.UTXOs, transactions, changes.CurrentHeight);
 			FillUTXOsInformation(changes.Unconfirmed.UTXOs, transactions, changes.CurrentHeight);
@@ -954,6 +965,7 @@ namespace NBXplorer.Controllers
 		}
 
 		int MaxHeight = int.MaxValue;
+
 		private void FillUTXOsInformation(List<UTXO> utxos, AnnotatedTransactionCollection transactions, int currentHeight)
 		{
 			for (int i = 0; i < utxos.Count; i++)
@@ -969,7 +981,7 @@ namespace NBXplorer.Controllers
 			}
 		}
 
-		private async Task<AnnotatedTransactionCollection> GetAnnotatedTransactions(Repository repo, SlimChain chain, TrackedSource trackedSource, uint256 txId = null)
+		private async Task<AnnotatedTransactionCollection> GetAnnotatedTransactions(IRepository repo, SlimChain chain, TrackedSource trackedSource, uint256 txId = null)
 		{
 			var transactions = await repo.GetTransactions(trackedSource, txId, this.HttpContext.RequestAborted);
 
@@ -991,6 +1003,7 @@ namespace NBXplorer.Controllers
 
 		[HttpPost]
 		[Route("cryptos/{cryptoCode}/transactions")]
+		[VersionConstraint(NBXplorerVersion.V1)]
 		public async Task<BroadcastResult> Broadcast(
 			string cryptoCode,
 			[ModelBinder(BinderType = typeof(DerivationStrategyModelBinder))]
@@ -1088,6 +1101,7 @@ namespace NBXplorer.Controllers
 
 		[HttpPost]
 		[Route("cryptos/{cryptoCode}/derivations")]
+		[VersionConstraint(NBXplorerVersion.V1)]
 		public async Task<IActionResult> GenerateWallet(string cryptoCode, [FromBody] GenerateWalletRequest request)
 		{
 			if (request == null)
@@ -1188,6 +1202,7 @@ namespace NBXplorer.Controllers
 
 		[HttpPost]
 		[Route("cryptos/{cryptoCode}/derivations/{derivationScheme}/prune")]
+		[VersionConstraint(NBXplorerVersion.V1)]
 		public async Task<PruneResponse> Prune(
 			string cryptoCode,
 			[ModelBinder(BinderType = typeof(DerivationStrategyModelBinder))]

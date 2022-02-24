@@ -46,7 +46,7 @@ namespace NBXplorer
 			{
 				httpClient.Timeout = System.Threading.Timeout.InfiniteTimeSpan;
 			});
-			services.AddNBXplorer();
+			services.AddNBXplorer(Configuration);
 			services.ConfigureNBxplorer(Configuration);
 			var builder = services.AddMvcCore();
 #if NETCOREAPP21

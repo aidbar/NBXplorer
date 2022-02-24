@@ -148,5 +148,10 @@ namespace NBXplorer
 				builder.Append($"/{PostIndexes}");
 			return builder.ToString();
 		}
+
+		public static object Parse(object keypathtemplate)
+		{
+			throw new NotImplementedException();
+		}
 	}
 }

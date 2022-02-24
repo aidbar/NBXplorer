@@ -133,7 +133,7 @@ namespace NBXplorer
 			});
 		}
 
-		public static IServiceCollection AddNBXplorer(this IServiceCollection services)
+		public static IServiceCollection AddNBXplorer(this IServiceCollection services, IConfiguration configuration)
 		{
 			services.AddSingleton<IObjectModelValidator, NoObjectModelValidator>();
 			services.Configure<MvcOptions>(mvc =>
@@ -150,8 +150,17 @@ namespace NBXplorer
 			services.TryAddSingleton<ChainProvider>();
 
 			services.TryAddSingleton<CookieRepository>();
-			services.TryAddSingleton<RepositoryProvider>();
-			services.AddSingleton<IHostedService, RepositoryProvider>(o => o.GetRequiredService<RepositoryProvider>());
+			if (configuration.ISNBXplorerV2())
+			{
+				services.TryAddSingleton<IRepositoryProvider, RepositoryProviderLegacy>();
+				services.AddHostedService<HostedServices.DatabaseSetupHostedService>();
+				services.AddSingleton<DbConnectionFactory>();
+			}
+			else
+			{
+				services.TryAddSingleton<IRepositoryProvider, RepositoryProvider>();
+			}
+			services.AddSingleton<IHostedService, IRepositoryProvider>(o => o.GetRequiredService<IRepositoryProvider>());
 			services.TryAddSingleton<EventAggregator>();
 			services.TryAddSingleton<AddressPoolService>();
 			services.AddSingleton<IHostedService, AddressPoolService>(o => o.GetRequiredService<AddressPoolService>());

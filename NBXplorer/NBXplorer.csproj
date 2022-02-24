@@ -12,17 +12,24 @@
     <None Remove="banlist.cli.txt" />
   </ItemGroup>
   <ItemGroup>
+	<EmbeddedResource Include="DBScripts\*.sql" />
     <EmbeddedResource Include="banlist.cli.txt" />
   </ItemGroup>
 
   <ItemGroup>
+    <PackageReference Include="Dapper" Version="2.0.123" />
     <PackageReference Include="DBTrie" Version="1.0.39" />
     <PackageReference Include="Microsoft.Azure.ServiceBus" Version="4.2.1" />
+    <PackageReference Include="Npgsql" Version="6.0.3" />
     <PackageReference Include="RabbitMQ.Client" Version="5.1.2" />
 	  <PackageReference Include="NicolasDorier.CommandLine" Version="1.0.0.2" />
 	  <PackageReference Include="NicolasDorier.CommandLine.Configuration" Version="1.0.0.3" />
 	<PackageReference Include="Microsoft.AspNetCore.Mvc.NewtonsoftJson" Version="6.0.1"></PackageReference>
     <ProjectReference Include="..\NBXplorer.Client\NBXplorer.Client.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Resource Include="DBScripts\001.Migrations.sql" />
   </ItemGroup>
   <ItemGroup>
     <Compile Update="Properties\Resources.Designer.cs">
