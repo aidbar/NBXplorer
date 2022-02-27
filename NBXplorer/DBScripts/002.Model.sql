@@ -1,67 +1,68 @@
 ﻿CREATE TABLE IF NOT EXISTS wallets (
-  id TEXT NOT NULL PRIMARY KEY,
+  wallet_id TEXT NOT NULL PRIMARY KEY,
   created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP);
 
 CREATE TABLE IF NOT EXISTS txs (
   code TEXT NOT NULL,
-  id TEXT NOT NULL,
+  tx_id TEXT NOT NULL,
   raw BYTEA NOT NULL,
+  invalid BOOLEAN NOT NULL DEFAULT 'f',
   indexed_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
-  PRIMARY KEY (code, id));
+  PRIMARY KEY (code, tx_id));
 
 CREATE TABLE IF NOT EXISTS blks (
   code TEXT NOT NULL,
-  id TEXT NOT NULL,
+  blk_id TEXT NOT NULL,
   height BIGINT, prev_id TEXT NOT NULL,
   confirmed BOOLEAN DEFAULT 't',
   indexed_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
-  PRIMARY KEY (code, id));
-CREATE INDEX IF NOT EXISTS blks_height ON blks (code, height DESC) WHERE 'confirmed' = 't';
+  PRIMARY KEY (code, blk_id));
+CREATE INDEX IF NOT EXISTS blks_code_height_idx ON blks (code, height DESC) WHERE 'confirmed' = 't';
+CREATE INDEX IF NOT EXISTS blks_code_blk_id_confirmed_height_idx ON blks (code, blk_id, confirmed, height);
 
 CREATE TABLE IF NOT EXISTS txs_blks (
   code TEXT NOT NULL,
   tx_id TEXT NOT NULL,
   blk_id TEXT NOT NULL,
   PRIMARY KEY(code, tx_id, blk_id),
-  FOREIGN KEY(code, tx_id) REFERENCES txs (code, id) ON DELETE CASCADE,
-  FOREIGN KEY(code, blk_id) REFERENCES blks (code, id) ON DELETE CASCADE);
+  FOREIGN KEY(code, tx_id) REFERENCES txs ON DELETE CASCADE,
+  FOREIGN KEY(code, blk_id) REFERENCES blks ON DELETE CASCADE);
 
-CREATE TABLE IF NOT EXISTS scriptpubkeys (
+CREATE TABLE IF NOT EXISTS scripts (
   code TEXT NOT NULL,
-  id TEXT NOT NULL,
+  script TEXT NOT NULL,
   addr TEXT NOT NULL,
-  PRIMARY KEY(code, id)
+  PRIMARY KEY(code, script)
 );
 
-CREATE TABLE IF NOT EXISTS scriptpubkeys_wallets (
+CREATE TABLE IF NOT EXISTS scripts_wallets (
   code TEXT NOT NULL,
-  scriptpubkey TEXT NOT NULL,
-  wallet_id TEXT NOT NULL,
-  PRIMARY KEY(code, scriptpubkey, wallet_id),
-  FOREIGN KEY (wallet_id) REFERENCES wallets (id) ON DELETE CASCADE,
-  FOREIGN KEY (code, scriptpubkey) REFERENCES scriptpubkeys (code, id) ON DELETE CASCADE);
+  script TEXT NOT NULL,
+  wallet_id TEXT NOT NULL REFERENCES wallets ON DELETE CASCADE,
+  PRIMARY KEY(code, script, wallet_id),
+  FOREIGN KEY (code, script) REFERENCES scripts ON DELETE CASCADE);
 
 CREATE TABLE IF NOT EXISTS outs (
   code TEXT NOT NULL,
   tx_id TEXT NOT NULL,
   idx INT NOT NULL,
-  scriptpubkey TEXT NOT NULL,
+  script TEXT NOT NULL,
   value BIGINT NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (code, tx_id, idx),
-  FOREIGN KEY (code, tx_id) REFERENCES txs (code, id) ON DELETE CASCADE);
+  FOREIGN KEY (code, tx_id) REFERENCES txs ON DELETE CASCADE,
+  FOREIGN KEY (code, script) REFERENCES scripts ON DELETE CASCADE);
 
 CREATE TABLE IF NOT EXISTS wallets_outs (
-  wallet_id TEXT NOT NULL REFERENCES wallets(id) ON DELETE CASCADE,
+  wallet_id TEXT NOT NULL REFERENCES wallets ON DELETE CASCADE,
   code TEXT NOT NULL,
   tx_id TEXT NOT NULL,
   idx INT NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (wallet_id, code, tx_id, idx),
-  FOREIGN KEY (code, tx_id, idx) REFERENCES outs (code, tx_id, idx),
-  FOREIGN KEY (wallet_id) REFERENCES wallets (id)
+  FOREIGN KEY (code, tx_id, idx) REFERENCES outs ON DELETE CASCADE
   );
-CREATE INDEX wallets_outs_outpoints ON wallets_outs (code, (tx_id || '-' || idx));
+CREATE INDEX IF NOT EXISTS wallets_outs_code_outpoint_idx ON wallets_outs (code, (tx_id || '-' || idx));
 
 CREATE TABLE IF NOT EXISTS ins (
   code TEXT NOT NULL,
@@ -70,42 +71,46 @@ CREATE TABLE IF NOT EXISTS ins (
   spent_idx INT NOT NULL,
   PRIMARY KEY (code, input_tx_id),
   FOREIGN KEY (code, spent_tx_id, spent_idx) REFERENCES outs (code, tx_id, idx) ON DELETE CASCADE,
-  FOREIGN KEY (code, input_tx_id) REFERENCES txs (code, id) ON DELETE CASCADE);
-CREATE INDEX IF NOT EXISTS ins_spent_outs ON ins (code, spent_tx_id, spent_idx);
+  FOREIGN KEY (code, input_tx_id) REFERENCES txs (code, tx_id) ON DELETE CASCADE);
+CREATE INDEX IF NOT EXISTS ins_code_spentoutpoint_txid_idx ON ins (code, spent_tx_id, spent_idx, input_tx_id);
 
 CREATE TABLE IF NOT EXISTS derivations (
   code TEXT NOT NULL,
-  wallet_id TEXT NOT NULL REFERENCES wallets (id) ON DELETE CASCADE,
   scheme TEXT NOT NULL,
-  PRIMARY KEY (code, wallet_id, scheme)
+  PRIMARY KEY (code, scheme)
+);
+
+CREATE TABLE IF NOT EXISTS derivations_wallets (
+  code TEXT NOT NULL,
+  scheme TEXT NOT NULL,
+  wallet_id TEXT NOT NULL REFERENCES wallets ON DELETE CASCADE,
+  PRIMARY KEY (code, scheme, wallet_id),
+  FOREIGN KEY (code, scheme) REFERENCES derivations ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS derivation_lines (
   code TEXT NOT NULL,
-  wallet_id TEXT NOT NULL,
   scheme TEXT NOT NULL,
-  name TEXT NOT NULL,
+  line_name TEXT NOT NULL,
   keypath_template TEXT NOT NULL,
   next_index INT DEFAULT 0,
-  PRIMARY KEY (code, wallet_id, scheme, name),
-  FOREIGN KEY (code, wallet_id, scheme) REFERENCES derivations (code, wallet_id, scheme) ON DELETE CASCADE
+  PRIMARY KEY (code, scheme, line_name),
+  FOREIGN KEY (code, scheme) REFERENCES derivations ON DELETE CASCADE
 );
 
-CREATE TABLE IF NOT EXISTS derivation_lines_scriptpubkeys (
+CREATE TABLE IF NOT EXISTS derivation_lines_scripts (
   code TEXT NOT NULL,
-  wallet_id TEXT NOT NULL,
   scheme TEXT NOT NULL,
   line_name TEXT NOT NULL,
   idx INT NOT NULL,
   keypath TEXT NOT NULL,
-  scriptpubkey TEXT NOT NULL,
+  script TEXT NOT NULL,
   used BOOLEAN DEFAULT 'f',
-  -- It would be better if used was not part of the primary key, but we get perf boost on COUNT(used) queries by doing so
-  PRIMARY KEY (code, wallet_id, scheme, line_name, used, idx),
-  FOREIGN KEY (code, scriptpubkey) REFERENCES scriptpubkeys (code, id) ON DELETE CASCADE,
-  FOREIGN KEY (code, wallet_id, scheme, line_name) REFERENCES derivation_lines (code, wallet_id, scheme, name) ON DELETE CASCADE
+  PRIMARY KEY (code, scheme, line_name, idx),
+  FOREIGN KEY (code, script) REFERENCES scripts ON DELETE CASCADE,
+  FOREIGN KEY (code, scheme, line_name) REFERENCES derivation_lines ON DELETE CASCADE
 );
-CREATE INDEX IF NOT EXISTS derivation_lines_scriptpubkeys_scriptpubkeys ON derivation_lines_scriptpubkeys (code, scriptpubkey, wallet_id);
+CREATE INDEX IF NOT EXISTS derivation_code_script_idx ON derivation_lines_scripts (code, script);
 
 CREATE TABLE IF NOT EXISTS evts (
   id SERIAL NOT NULL PRIMARY KEY,
@@ -119,23 +124,50 @@ CREATE INDEX IF NOT EXISTS evts_id ON evts (id DESC);
 CREATE INDEX IF NOT EXISTS evts_code_id ON evts (code, id DESC);
 
 CREATE OR REPLACE VIEW conf_utxos AS
-SELECT wo.code, wo.wallet_id, wo.tx_id, wo.idx, o.scriptpubkey, "value", MAX(COALESCE(ob.height, 0)) height, MIN(o.created_at) created_at
-FROM wallets_outs wo
-INNER JOIN outs o ON wo.code = o.code AND wo.tx_id = o.tx_id AND wo.idx = o.idx
-INNER JOIN txs_blks otb ON wo.code = otb.code AND wo.tx_id = otb.tx_id
-INNER JOIN blks ob ON wo.code = ob.code AND otb.blk_id = ob.id
-LEFT OUTER JOIN ins i ON wo.code = i.code AND wo.tx_id = i.spent_tx_id AND wo.idx = i.spent_idx
+WITH conf_outs
+AS (
+  SELECT wo.code, wo.wallet_id, wo.tx_id, wo.idx, ob.blk_id
+  FROM wallets_outs wo
+  INNER JOIN txs_blks otb USING (code, tx_id)
+  INNER JOIN blks ob USING (code, blk_id)
+  WHERE ob.confirmed = 't'
+)
+SELECT wo.code, wo.wallet_id, wo.tx_id, wo.idx, wo.blk_id FROM conf_outs wo
+LEFT JOIN ins i ON wo.code = i.code AND wo.tx_id = i.spent_tx_id AND wo.idx = i.spent_idx
 LEFT JOIN txs_blks itb ON wo.code = itb.code AND i.input_tx_id = itb.tx_id
-LEFT JOIN blks ib ON wo.code = ib.code AND itb.blk_id = ib.id
-GROUP BY wo.code, wo.wallet_id, wo.tx_id, wo.idx, o.scriptpubkey, o.value HAVING BOOL_OR(ob.confirmed) = 't' AND (BOOL_OR(ib.confirmed) = 'f' OR BOOL_OR(ib.confirmed) is null);
+LEFT JOIN blks ib ON wo.code = ib.code AND itb.blk_id=ib.blk_id
+GROUP BY wo.code, wo.wallet_id, wo.tx_id, wo.idx, wo.blk_id HAVING BOOL_OR(ib.confirmed) = 'f' OR BOOL_OR(ib.confirmed) is NULL;
+
+CREATE OR REPLACE VIEW hd_scripts AS
+SELECT dls.code, dw.wallet_id, dls.scheme, dls.line_name, dls.script, dls.keypath, dls.idx, dls.used
+FROM derivation_lines_scripts dls
+INNER JOIN derivations_wallets dw USING (code, scheme);
+
+CREATE OR REPLACE FUNCTION get_wallet_conf_utxos(in_code TEXT, in_wallet_id TEXT)
+RETURNS TABLE (code TEXT, wallet_id TEXT, tx_id TEXT, idx INTEGER, blk_id TEXT) AS $$
+BEGIN
+  RETURN QUERY 
+  SELECT wo.code, wo.wallet_id, wo.tx_id, wo.idx, wo.blk_id
+  FROM conf_utxos wo
+  LEFT JOIN outs o USING (code, tx_id, idx)
+  LEFT JOIN hd_scripts USING (code, script)
+  WHERE wo.code=$1 AND wo.wallet_id=$2;
+END;
+$$  LANGUAGE plpgsql;
 
 CREATE OR REPLACE VIEW tracked_outs AS
-SELECT wo.code, wo.wallet_id,  wo.tx_id || '-' || wo.idx spent_outpoint, o.scriptpubkey, dl.keypath_template, dls.idx FROM wallets_outs wo 
-INNER JOIN outs o ON wo.code = o.code AND wo.tx_id = o.tx_id AND wo.idx = o.idx 
-LEFT JOIN derivation_lines_scriptpubkeys dls ON wo.code = dls.code AND o.scriptpubkey = dls.scriptpubkey AND wo.wallet_id = dls.wallet_id 
-LEFT JOIN derivation_lines dl ON wo.code = dl.code AND wo.wallet_id = dl.wallet_id AND dls.scheme = dl.scheme AND dls.line_name = dl.name;
+SELECT wo.code, hs.wallet_id,  wo.tx_id || '-' || wo.idx spent_outpoint, o.script, o.value, hs.keypath, hs.line_name, hs.idx FROM wallets_outs wo 
+INNER JOIN outs o USING (code, tx_id, idx)
+LEFT JOIN hd_scripts hs USING (code, script);
 
-CREATE OR REPLACE VIEW tracked_scriptpubkeys AS
-SELECT sw.code, dls.wallet_id, sw.scriptpubkey, dl.keypath_template, dl.name as line_name, dls.idx, dls.keypath FROM scriptpubkeys_wallets sw 
-LEFT JOIN derivation_lines_scriptpubkeys dls ON sw.code = dls.code AND sw.scriptpubkey = dls.scriptpubkey AND sw.wallet_id = dls.wallet_id 
-LEFT JOIN derivation_lines dl ON sw.code = dl.code AND dls.wallet_id = dl.wallet_id AND dls.scheme = dl.scheme AND dls.line_name = dl.name
+CREATE OR REPLACE VIEW tracked_scripts AS
+SELECT sw.code, hs.wallet_id, sw.script, hs.keypath, hs.line_name, hs.idx FROM scripts_wallets sw 
+LEFT JOIN hd_scripts hs USING (code, script);
+
+
+CREATE OR REPLACE VIEW unconf_txs AS
+SELECT t.code, t.tx_id, t.raw, t.indexed_at FROM txs t
+LEFT JOIN txs_blks tb USING (code, tx_id)
+LEFT JOIN blks b USING (code, blk_id)
+WHERE t.invalid = 'f'
+GROUP BY t.code, t.tx_id, t.raw, t.indexed_at HAVING BOOL_AND(b.confirmed) = 'f' OR BOOL_OR(b.confirmed) is null;

@@ -13,6 +13,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Hosting;
 using Xunit.Abstractions;
 using Microsoft.Extensions.Configuration;
+using NBXplorer.Configuration;
 
 namespace NBXplorer.Tests
 {
@@ -109,10 +110,10 @@ namespace NBXplorer.Tests
 			Assert.Equal(2, utxos.Length);
 			utxos = await conn.GetUTXOs("Alice");
 			Assert.Single(utxos);
-			Assert.Equal(50, utxos[0].value);
+			//Assert.Equal(50, utxos[0].value);
 			utxos = await conn.GetUTXOs("Bob");
 			Assert.Single(utxos);
-			Assert.Equal(40, utxos[0].value);
+			//Assert.Equal(40, utxos[0].value);
 			await conn.Orphan(b1);
 			Assert.Empty(await conn.GetUTXOs());
 		}
@@ -140,8 +141,7 @@ namespace NBXplorer.Tests
 			{
 				builder.AddProvider(new XUnitLoggerProvider(Logs));
 			});
-			container.AddHostedService<HostedServices.DatabaseSetupHostedService>();
-			container.AddSingleton<DbConnectionFactory>();
+			new Startup(conf).ConfigureServices(container);
 			var provider = container.BuildServiceProvider();
 			foreach (var service in provider.GetServices<IHostedService>())
 				await service.StartAsync(default);
@@ -160,7 +160,7 @@ namespace NBXplorer.Tests
 			Assert.Equal(0, await db.ExecuteScalarAsync<long>("SELECT COUNT(*) FROM conf_utxos WHERE wallet_id = @wid", new { wid = walletId }));
 		}
 
-		public record UTXORow(string code, System.String wallet_id, System.String tx_id, System.Int32 idx, System.Int64 value, System.Int64 height, System.DateTime created_at);
+		public record UTXORow(string code, System.String wallet_id, System.String tx_id, System.Int32 idx, string blk_id);
 		public static async Task<UTXORow[]> GetUTXOs(this DbConnection db, string walletId = null)
 		{
 			if (walletId is String)
@@ -186,7 +186,7 @@ namespace NBXplorer.Tests
 
 		public static async Task Orphan(this DbConnection db, string block)
 		{
-			await db.ExecuteAsync("UPDATE blks SET confirmed = 'f' WHERE id = @b;", new { b = block });
+			await db.ExecuteAsync("UPDATE blks SET confirmed = 'f' WHERE blk_id = @b;", new { b = block });
 		}
 		public static async Task CreateOutput(this DbConnection db, string walletId, string tx, int index, string scriptpubkey, int val)
 		{
@@ -202,7 +202,7 @@ namespace NBXplorer.Tests
 
 		public static async Task AddOutput(this DbConnection db, string tx, int index, string scriptpubkey, int val)
 		{
-			await db.ExecuteAsync("INSERT INTO scriptpubkeys VALUES ('BTC', @scriptpubkey, 'lol')", new { scriptpubkey = scriptpubkey });
+			await db.ExecuteAsync("INSERT INTO scripts VALUES ('BTC', @scriptpubkey, 'lol')", new { scriptpubkey = scriptpubkey });
 			await db.ExecuteAsync("INSERT INTO outs VALUES ('BTC', @tx, @idx, @scriptpubkey, @v)", new { tx, idx = index, scriptpubkey = scriptpubkey, v = val });
 		}
 
@@ -213,7 +213,7 @@ namespace NBXplorer.Tests
 
 		public static async Task SpendOutput(this DbConnection db, string tx, string spentTx, int spentIndex)
 		{
-			await db.ExecuteAsync("INSERT INTO ins VALUES ('BTC', @tx, 1, @spenttx, @spentidx)", new { tx, spenttx = spentTx, spentidx = spentIndex });
+			await db.ExecuteAsync("INSERT INTO ins VALUES ('BTC', @tx, @spenttx, @spentidx)", new { tx, spenttx = spentTx, spentidx = spentIndex });
 		}
 	}
 }

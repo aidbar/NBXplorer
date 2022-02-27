@@ -128,6 +128,9 @@ namespace NBXplorer.Controllers
 					Feature = Enum.Parse<DerivationFeature>(row.line_name)
 				});
 			}
+
+			//"SELECT * froms "
+
 			//var chain = ChainProvider.GetChain(network);
 			var repo = RepositoryProvider.GetRepository(network);
 

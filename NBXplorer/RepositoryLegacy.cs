@@ -142,7 +142,7 @@ namespace NBXplorer
 		public async Task<BlockLocator> GetIndexProgress()
 		{
 			await using var connection = await connectionFactory.CreateConnection();
-			var blocks = (await connection.QueryAsync<string>("SELECT id FROM blks WHERE code=@code AND confirmed='t' ORDER BY height DESC LIMIT 1000;", new { code = Network.CryptoCode }))
+			var blocks = (await connection.QueryAsync<string>("SELECT blk_id FROM blks WHERE code=@code AND confirmed='t' ORDER BY height DESC LIMIT 1000;", new { code = Network.CryptoCode }))
 				.Select(b => uint256.Parse(b))
 				.ToArray();
 			if (blocks.Length is 0)

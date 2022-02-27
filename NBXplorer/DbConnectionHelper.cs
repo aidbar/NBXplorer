@@ -81,21 +81,22 @@ namespace NBXplorer
 		}
 		public async Task CreateDerivationLines(string walletId, string scheme, params (string lineName, KeyPathTemplate keyPathTemplate)[] lines)
 		{
-			var rows = lines.Select(c => new { code = Network.CryptoCode, walletId = walletId, scheme = scheme, c.lineName, keyPathTemplate = c.keyPathTemplate.ToString() }).ToArray();
-			await Connection.ExecuteAsync("INSERT INTO derivation_lines VALUES (@code, @walletId, @scheme, @lineName, @keyPathTemplate) ON CONFLICT DO NOTHING", rows);
+			var rows = lines.Select(c => new { code = Network.CryptoCode, scheme = scheme, c.lineName, keyPathTemplate = c.keyPathTemplate.ToString() }).ToArray();
+			await Connection.ExecuteAsync("INSERT INTO derivation_lines VALUES (@code, @scheme, @lineName, @keyPathTemplate) ON CONFLICT DO NOTHING", rows);
 		}
 
 		public async Task CreateDerivation(string walletId, string scheme)
 		{
-			await Connection.ExecuteAsync("INSERT INTO derivations VALUES (@code, @walletId, @scheme) ON CONFLICT DO NOTHING", new { code = Network.CryptoCode, walletId, scheme });
+			await Connection.ExecuteAsync("INSERT INTO derivations VALUES (@code, @scheme) ON CONFLICT DO NOTHING", new { code = Network.CryptoCode, scheme });
+			await Connection.ExecuteAsync("INSERT INTO derivations_wallets VALUES (@code, @scheme, @walletId) ON CONFLICT DO NOTHING", new { code = Network.CryptoCode, walletId, scheme });
 		}
 
-		record DerivationLinesScriptPubKeyInsert(string code, string wallet_id, string scheme, string line_name, int idx, string keypath, string scriptpubkey);
+		record DerivationLinesScriptPubKeyInsert(string code, string scheme, string line_name, int idx, string keypath, string scriptpubkey);
 		public async Task<int> GenerateAddresses(string walletId, string scheme, string line, GenerateAddressQuery? query)
 		{
 			query = query ?? new GenerateAddressQuery();
 
-			var unused = await Connection.ExecuteScalarAsync<int>("SELECT COUNT(NOT used) FROM derivation_lines_scriptpubkeys WHERE code = @code AND wallet_id = @walletId AND scheme = @scheme AND line_name = @line", new { code = Network.CryptoCode, walletId, scheme, line });
+			var unused = await Connection.ExecuteScalarAsync<int>("SELECT COUNT(NOT used) FROM derivation_lines_scripts WHERE code = @code AND scheme = @scheme AND line_name = @line", new { code = Network.CryptoCode, scheme, line });
 			if (unused >= MinPoolSize)
 				return 0;
 			var toGenerate = Math.Max(0, MaxPoolSize - unused);
@@ -121,10 +122,10 @@ namespace NBXplorer
 			{
 				var derivation = derivationLine.Derive((uint)i);
 				scriptpubkeys[i - row.next_index] = derivation.ScriptPubKey;
-				linesScriptpubkeys[i - row.next_index] = new DerivationLinesScriptPubKeyInsert(Network.CryptoCode, walletId, scheme, line, i, keypathTemplate.GetKeyPath(i, false).ToString(), derivation.ScriptPubKey.ToHex());
+				linesScriptpubkeys[i - row.next_index] = new DerivationLinesScriptPubKeyInsert(Network.CryptoCode, scheme, line, i, keypathTemplate.GetKeyPath(i, false).ToString(), derivation.ScriptPubKey.ToHex());
 			});
 			await AddScriptPubKeys(walletId, scriptpubkeys);
-			return await Connection.ExecuteAsync("INSERT INTO derivation_lines_scriptpubkeys VALUES (@code, @wallet_id, @scheme, @line_name, @idx, @keypath, @scriptpubkey) ON CONFLICT DO NOTHING", linesScriptpubkeys);
+			return await Connection.ExecuteAsync("INSERT INTO derivation_lines_scripts VALUES (@code, @scheme, @line_name, @idx, @keypath, @scriptpubkey) ON CONFLICT DO NOTHING", linesScriptpubkeys);
 		}
 	}
 }
