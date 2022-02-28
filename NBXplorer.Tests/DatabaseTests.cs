@@ -92,6 +92,14 @@ namespace NBXplorer.Tests
 			await conn.ConfirmTx("b1-3", "t1");
 			await conn.ConfirmTx("b2-3", "t2");
 			await AssertBalance(conn, "b2-3", "b1-3");
+
+			await conn.ConfirmTx("b1-4", "t1");
+			await conn.ConfirmTx("b2-4", "t2");
+			await conn.CreateTransaction("t3");
+			await conn.AddOutput("t3", 0, "alice3", 394);
+			await conn.ConfirmTx("b3-4", "t3");
+
+			var row = await conn.QueryAsync("SELECT * FROM get_wallet_conf_utxos('BTC', 'Alice')");
 		}
 
 		private static async Task AssertBalance(DbConnection conn, string b2, string b1)
@@ -133,7 +141,7 @@ namespace NBXplorer.Tests
 		private async Task<DbConnection> GetConnection(string dbName = null)
 		{
 			dbName ??= $"dbtest{RandomUtils.GetUInt32()}";
-			var connectionString = $"User ID=postgres;Host=localhost;Port=39383;Database={dbName}";
+			var connectionString = $"User ID=postgres;Host=localhost;Include Error Detail=true;Port=39383;Database={dbName}";
 			var conf = new ConfigurationBuilder().AddInMemoryCollection(new[] { new KeyValuePair<string, string>("POSTGRES", connectionString) }).Build();
 			var container = new ServiceCollection();
 			container.AddSingleton<IConfiguration>(conf);

@@ -35,7 +35,7 @@ CREATE TABLE IF NOT EXISTS scripts (
   PRIMARY KEY(code, script)
 );
 
-CREATE TABLE IF NOT EXISTS scripts_wallets (
+CREATE TABLE IF NOT EXISTS explicit_scripts_wallets (
   code TEXT NOT NULL,
   script TEXT NOT NULL,
   wallet_id TEXT NOT NULL REFERENCES wallets ON DELETE CASCADE,
@@ -138,32 +138,27 @@ LEFT JOIN txs_blks itb ON wo.code = itb.code AND i.input_tx_id = itb.tx_id
 LEFT JOIN blks ib ON wo.code = ib.code AND itb.blk_id=ib.blk_id
 GROUP BY wo.code, wo.wallet_id, wo.tx_id, wo.idx, wo.blk_id HAVING BOOL_OR(ib.confirmed) = 'f' OR BOOL_OR(ib.confirmed) is NULL;
 
-CREATE OR REPLACE VIEW hd_scripts AS
-SELECT dls.code, dw.wallet_id, dls.scheme, dls.line_name, dls.script, dls.keypath, dls.idx, dls.used
+CREATE OR REPLACE VIEW tracked_scripts AS
+SELECT dls.code, dls.script, dw.wallet_id, 'HD' source, dls.scheme, dls.line_name, dls.keypath, dls.idx, dls.used
 FROM derivation_lines_scripts dls
-INNER JOIN derivations_wallets dw USING (code, scheme);
+INNER JOIN derivations_wallets dw USING (code, scheme)
+UNION ALL
+SELECT esw.code, esw.script, esw.wallet_id, 'EXPLICIT' source, NULL, NULL, NULL, NULL, NULL
+FROM explicit_scripts_wallets esw;
 
 CREATE OR REPLACE FUNCTION get_wallet_conf_utxos(in_code TEXT, in_wallet_id TEXT)
-RETURNS TABLE (code TEXT, wallet_id TEXT, tx_id TEXT, idx INTEGER, blk_id TEXT) AS $$
-BEGIN
-  RETURN QUERY 
-  SELECT wo.code, wo.wallet_id, wo.tx_id, wo.idx, wo.blk_id
+RETURNS TABLE (code TEXT, wallet_id TEXT, tx_id TEXT, idx INTEGER, script TEXT, value BIGINT, scheme TEXT, line_name TEXT, keypath TEXT) AS $$
+  SELECT wo.code, wo.wallet_id, wo.tx_id, wo.idx, ts.script, o.value, ts.scheme, ts.line_name, ts.keypath
   FROM conf_utxos wo
   LEFT JOIN outs o USING (code, tx_id, idx)
-  LEFT JOIN hd_scripts USING (code, script)
+  LEFT JOIN tracked_scripts ts USING (code, script)
   WHERE wo.code=$1 AND wo.wallet_id=$2;
-END;
-$$  LANGUAGE plpgsql;
+$$  LANGUAGE SQL STABLE;
 
 CREATE OR REPLACE VIEW tracked_outs AS
-SELECT wo.code, hs.wallet_id,  wo.tx_id || '-' || wo.idx spent_outpoint, o.script, o.value, hs.keypath, hs.line_name, hs.idx FROM wallets_outs wo 
+SELECT wo.code, wo.tx_id || '-' || wo.idx spent_outpoint, ts.wallet_id, o.script, o.value, ts.scheme, ts.line_name, ts.keypath FROM wallets_outs wo 
 INNER JOIN outs o USING (code, tx_id, idx)
-LEFT JOIN hd_scripts hs USING (code, script);
-
-CREATE OR REPLACE VIEW tracked_scripts AS
-SELECT sw.code, hs.wallet_id, sw.script, hs.keypath, hs.line_name, hs.idx FROM scripts_wallets sw 
-LEFT JOIN hd_scripts hs USING (code, script);
-
+LEFT JOIN tracked_scripts ts USING (code, script);
 
 CREATE OR REPLACE VIEW unconf_txs AS
 SELECT t.code, t.tx_id, t.raw, t.indexed_at FROM txs t
