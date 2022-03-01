@@ -1661,5 +1661,10 @@ namespace NBXplorer
 		{
 			return tx.GetTable($"{_Suffix}Txs");
 		}
+
+		public Task NewBlock(SlimChainedBlock block)
+		{
+			return Task.CompletedTask;
+		}
 	}
 }

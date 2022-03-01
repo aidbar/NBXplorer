@@ -2,9 +2,16 @@
   code TEXT NOT NULL,
   tx_id TEXT NOT NULL,
   raw BYTEA NOT NULL,
-  invalid BOOLEAN NOT NULL DEFAULT 'f',
+  mempool BOOLEAN NOT NULL,
   indexed_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (code, tx_id));
+
+  -- In theory, we could check whether a tx isn't in a confirmed block.
+  -- The problem is that it would need a LEFT JOIN ... block IS NULL, which
+  -- would require a full scan over the whole txs table.
+  -- This field is automatically updated via triggers on blks and txs_blks
+  CREATE INDEX IF NOT EXISTS txs_code_mempool ON txs (code, mempool) INCLUDE (tx_id) WHERE mempool='t';
+
 
 CREATE TABLE IF NOT EXISTS blks (
   code TEXT NOT NULL,
@@ -13,9 +20,26 @@ CREATE TABLE IF NOT EXISTS blks (
   confirmed BOOLEAN DEFAULT 't',
   indexed_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (code, blk_id));
-CREATE INDEX IF NOT EXISTS blks_code_height_idx ON blks (code, height DESC) WHERE 'confirmed' = 't';
+CREATE INDEX IF NOT EXISTS blks_code_height_idx ON blks (code, height DESC) WHERE confirmed = 't';
 CREATE INDEX IF NOT EXISTS blks_code_blk_id_confirmed_height_idx ON blks (code, blk_id, confirmed, height);
 
+-- If the blks confirmation state change, update the mempool flag of the txs
+CREATE OR REPLACE FUNCTION set_tx_mempool()
+  RETURNS TRIGGER 
+  LANGUAGE PLPGSQL
+AS $$
+BEGIN
+	UPDATE txs t SET mempool= NOT NEW.confirmed
+	FROM (SELECT tb.tx_id FROM txs_blks tb WHERE code=NEW.code AND blk_id=NEW.blk_id) AS q
+	WHERE t.code=NEW.code AND t.tx_id=q.tx_id;
+	RETURN NEW;
+END;
+$$;
+CREATE TRIGGER blks_mempool AFTER UPDATE ON blks FOR EACH ROW EXECUTE PROCEDURE set_tx_mempool();
+--------------------
+
+
+-- If the a txs get added to a block, update the mempool flag of the txs
 CREATE TABLE IF NOT EXISTS txs_blks (
   code TEXT NOT NULL,
   tx_id TEXT NOT NULL,
@@ -23,6 +47,19 @@ CREATE TABLE IF NOT EXISTS txs_blks (
   PRIMARY KEY(code, tx_id, blk_id),
   FOREIGN KEY(code, tx_id) REFERENCES txs ON DELETE CASCADE,
   FOREIGN KEY(code, blk_id) REFERENCES blks ON DELETE CASCADE);
+
+CREATE OR REPLACE FUNCTION unset_tx_mempool()
+  RETURNS TRIGGER 
+  LANGUAGE PLPGSQL
+AS $$
+BEGIN
+	UPDATE txs SET mempool=(SELECT NOT b.confirmed FROM blks b WHERE b.blk_id=NEW.blk_id)
+	WHERE code=NEW.code AND tx_id=NEW.tx_id;
+	RETURN NEW;
+END;
+$$;
+CREATE TRIGGER txs_blks_mempool AFTER INSERT ON txs_blks FOR EACH ROW EXECUTE PROCEDURE unset_tx_mempool();
+
 
 CREATE TABLE IF NOT EXISTS scripts (
   code TEXT NOT NULL,
@@ -134,8 +171,8 @@ LEFT JOIN blks b USING (code, blk_id)
 GROUP BY t.code, t.tx_id, t.raw, t.indexed_at HAVING BOOL_AND(b.confirmed) = 'f' OR BOOL_OR(b.confirmed) is null;
 
 CREATE OR REPLACE FUNCTION get_wallet_conf_utxos(in_code TEXT, in_wallet_id TEXT)
-RETURNS TABLE (tx_id TEXT, idx INTEGER, script TEXT, value BIGINT) AS $$
-  SELECT cu.tx_id, cu.idx, cu.script, cu.value
+RETURNS TABLE (code TEXT, tx_id TEXT, idx INTEGER, script TEXT, value BIGINT) AS $$
+  SELECT cu.code, cu.tx_id, cu.idx, cu.script, cu.value
   FROM (SELECT ds.script
   FROM descriptors_wallets dw
   INNER JOIN descriptors_scripts ds ON dw.code = ds.code AND dw.descriptor = ds.descriptor

@@ -191,7 +191,7 @@ namespace NBXplorer.Tests
 
 		static async Task CreateTransaction(this DbConnection db, string tx)
 		{
-			await db.ExecuteAsync("INSERT INTO txs VALUES ('BTC', @tx, '') ON CONFLICT DO NOTHING", new { tx });
+			await db.ExecuteAsync("INSERT INTO txs VALUES ('BTC', @tx, '', 'f') ON CONFLICT DO NOTHING", new { tx });
 		}
 
 		public static async Task AddOutput(this DbConnection db, string tx, int index, string scriptpubkey, int val)

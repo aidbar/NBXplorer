@@ -476,5 +476,14 @@ namespace NBXplorer
 		{
 			throw new NotImplementedException();
 		}
+
+		public async Task NewBlock(SlimChainedBlock newTip)
+		{
+			await using var conn = await GetConnection();
+			var tip = await conn.GetTip();
+			if (tip is not null && newTip.Previous != tip.Hash)
+				await conn.Connection.ExecuteScalarAsync<int>("UPDATE blks SET confirmed='f' WHERE height >= @newtipheight", new { newtipheight = newTip.Height });
+			await conn.Connection.ExecuteAsync("INSERT INTO blks VALUES (@code, @id, @height, @prev)", new { code = Network.CryptoCode, id = newTip.Hash.ToString(), prev = newTip.Previous.ToString(), height = newTip.Height });
+		}
 	}
 }

@@ -53,12 +53,13 @@ namespace NBXplorer
 				code = Network.CryptoCode,
 				id = tx.GetHash().ToString(),
 				raw = tx.ToBytes(),
+				mempool = blockId is null,
 				indexed_at = now is null ? default : now.Value,
 			}).ToArray();
 			if (now is null)
-				await Connection.ExecuteAsync("INSERT INTO txs VALUES (@code, @id, @raw) ON CONFLICT (code, tx_id) DO UPDATE SET raw = COALESCE(@raw, txs.raw)", txs);
+				await Connection.ExecuteAsync("INSERT INTO txs VALUES (@code, @id, @raw, @mempool) ON CONFLICT (code, tx_id) DO UPDATE SET raw = COALESCE(@raw, txs.raw), mempool = @mempool", txs);
 			else
-				await Connection.ExecuteAsync("INSERT INTO txs VALUES (@code, @id, @raw, 'f', @indexed_at) ON CONFLICT (code, tx_id) DO UPDATE SET indexed_at=@indexed_at, raw = COALESCE(@raw, txs.raw), invalid = 'f'", txs);
+				await Connection.ExecuteAsync("INSERT INTO txs VALUES (@code, @id, @raw, @mempool, @indexed_at) ON CONFLICT (code, tx_id) DO UPDATE SET indexed_at=LEAST(@indexed_at, txs.indexed_at), raw = COALESCE(@raw, txs.raw), mempool = @mempool", txs);
 			if (blockId is not null)
 			{
 				var txs_blks = transactions.Select(tx =>
@@ -140,6 +141,15 @@ namespace NBXplorer
 				result.TryAdd(new OutPoint(uint256.Parse(row.tx_id), row.idx), txout);
 			}
 			return result;
+		}
+
+		record BlockRow(System.String blk_id, System.String prev_id, System.Int64 height);
+		public async Task<SlimChainedBlock?> GetTip()
+		{
+			var row = await Connection.QueryFirstOrDefaultAsync<BlockRow>("SELECT blk_id, prev_id, height FROM blks WHERE code=@code AND confirmed = 't' LIMIT 1", new { code = Network.CryptoCode });
+			if (row is null)
+				return null;
+			return new SlimChainedBlock(uint256.Parse(row.blk_id), uint256.Parse(row.prev_id), (int)row.height);
 		}
 	}
 }

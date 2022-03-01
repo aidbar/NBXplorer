@@ -108,9 +108,9 @@ namespace NBXplorer.Controllers
 				throw new ArgumentNullException(nameof(trackedSource));
 			var network = GetNetwork(cryptoCode, false);
 			await using var conn = await ConnectionFactory.CreateConnectionHelper(network);
-			changes.CurrentHeight = await conn.Connection.ExecuteScalarAsync<int>("SELECT max(height) FROM blks WHERE code=@code AND confirmed = 't'", new { code = network.CryptoCode });
+			changes.CurrentHeight = (await conn.GetTip()).Height;
 			foreach (var row in await conn.Connection.QueryAsync<(string tx_id, int idx, long value, string script, string keypath, long height)>
-				("SELECT tx_id, u.idx, value, script, keypath, height FROM conf_utxos u " +
+				("SELECT u.code, tx_id, u.idx, value, script, keypath, height FROM get_wallet_conf_utxos(@code, @walletId) u " +
 				"INNER JOIN tracked_scripts ts USING (code, script) " +
 				"WHERE u.code=@code AND ts.wallet_id=@walletId", new { code = network.CryptoCode, walletId = trackedSource.GetLegacyWalletId(network) }))
 			{
@@ -130,6 +130,11 @@ namespace NBXplorer.Controllers
 				});
 			}
 
+			var spentOutpoints = (await conn.Connection.QueryAsync<string>(
+				"SELECT to_outpoint(i.spent_tx_id, i.spent_idx) FROM ins i " +
+				"JOIN txs t ON i.code=t.code AND i.input_tx_id=t.tx_id " +
+				"WHERE t.code=@code AND t.mempool='t' "))
+				.Select(o => OutPoint.Parse(o)).ToArray();
 			//"SELECT * froms "
 
 			//var chain = ChainProvider.GetChain(network);

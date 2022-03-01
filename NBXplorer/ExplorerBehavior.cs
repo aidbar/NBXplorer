@@ -187,6 +187,7 @@ namespace NBXplorer
 				var slimBlockHeader = Chain.GetBlock(blockHash);
 				if (slimBlockHeader != null)
 				{
+					await Repository.NewBlock(slimBlockHeader);
 					var blockEvent = new Models.NewBlockEvent()
 					{
 						CryptoCode = _Repository.Network.CryptoCode,
@@ -214,15 +215,12 @@ namespace NBXplorer
 				goto retry;
 			}
 		}
-
-
 		internal async Task SaveMatches(Transaction transaction, bool fireEvents)
 		{
 			var now = DateTimeOffset.UtcNow;
 			var matches = (await Repository.GetMatches(transaction, null, now, false)).ToArray();
 			await SaveMatches(matches, null, now, fireEvents);
 		}
-
 		private async Task SaveMatches(TrackedTransaction[] matches, uint256 blockHash, DateTimeOffset now, bool fireEvents)
 		{
 			await Repository.SaveMatches(matches);
@@ -301,12 +299,23 @@ namespace NBXplorer
 		{
 			try
 			{
-				CurrentLocation = await Repository.GetIndexProgress() ?? GetDefaultCurrentLocation();
+				CurrentLocation = await Repository.GetIndexProgress();
+				bool defaultLocation = false;
+				if (CurrentLocation is null)
+				{
+					CurrentLocation = GetDefaultCurrentLocation();
+					defaultLocation = true;
+				}
 				var fork = Chain.FindFork(CurrentLocation);
 				if (fork == null)
 				{
 					CurrentLocation = GetDefaultCurrentLocation();
+					defaultLocation = true;
 					fork = Chain.FindFork(CurrentLocation);
+				}
+				if (defaultLocation)
+				{
+					await Repository.NewBlock(fork);
 				}
 				Logs.Explorer.LogInformation($"{Network.CryptoCode}: Starting scan at block " + fork.Height);
 
