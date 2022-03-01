@@ -59,35 +59,36 @@ namespace NBXplorer.Controllers
 			await conn.CreateWallet(walletId);
 			if (trackedSource is DerivationSchemeTrackedSource dts)
 			{
-				await conn.CreateDerivation(walletId, walletId);
-				await conn.CreateDerivationLines(walletId, walletId,
-					keyPathTemplates.GetSupportedDerivationFeatures()
-					.Select(o => (o.ToString(), keyPathTemplates.GetKeyPathTemplate(o)))
-					.ToArray());
+				var descriptors = keyPathTemplates.GetSupportedDerivationFeatures()
+					.Select(f => new LegacyDescriptor(dts.DerivationStrategy, keyPathTemplates.GetKeyPathTemplate(f)))
+					.ToArray();
+				await conn.CreateDescriptors(walletId, descriptors);
 				if (request.Wait)
 				{
-					foreach (var feature in keyPathTemplates.GetSupportedDerivationFeatures())
+					foreach (var o in descriptors.Zip(keyPathTemplates.GetSupportedDerivationFeatures()))
 					{
-						await conn.GenerateAddresses(walletId, walletId, feature.ToString(), GenerateAddressQuery(request, feature));
+						await conn.GenerateAddresses(o.First, GenerateAddressQuery(request, o.Second));
 					}
 				}
 				else
 				{
-					foreach (var feature in keyPathTemplates.GetSupportedDerivationFeatures())
+					foreach (var desc in descriptors)
 					{
-						await conn.GenerateAddresses(walletId, walletId, feature.ToString(), new GenerateAddressQuery(minAddresses: 3, null));
+						await conn.GenerateAddresses(desc, new GenerateAddressQuery(minAddresses: 3, null));
 					}
-					foreach (var feature in keyPathTemplates.GetSupportedDerivationFeatures())
+					foreach (var o in descriptors.Zip(keyPathTemplates.GetSupportedDerivationFeatures()))
 					{
-						_ = conn.GenerateAddresses(walletId, walletId, feature.ToString(), GenerateAddressQuery(request, feature));
+						_ = GenerateAdresses(request, o.First, o.Second, network);
 					}
 				}
 			}
-			else if (trackedSource is IDestination ats)
-			{
-				await conn.AddScriptPubKeys(walletId, ats.ScriptPubKey);
-			}
 			return Ok();
+		}
+
+		private async Task<int> GenerateAdresses(TrackWalletRequest request, LegacyDescriptor descriptor, DerivationFeature feature, NBXplorerNetwork network)
+		{
+			await using var conn = await ConnectionFactory.CreateConnectionHelper(network);
+			return await conn.GenerateAddresses(descriptor, GenerateAddressQuery(request, feature));
 		}
 
 		[HttpGet]
@@ -108,24 +109,24 @@ namespace NBXplorer.Controllers
 			var network = GetNetwork(cryptoCode, false);
 			await using var conn = await ConnectionFactory.CreateConnectionHelper(network);
 			changes.CurrentHeight = await conn.Connection.ExecuteScalarAsync<int>("SELECT max(height) FROM blks WHERE code=@code AND confirmed = 't'", new { code = network.CryptoCode });
-			foreach (var row in await conn.Connection.QueryAsync<(string tx_id, int idx, string scriptpubkey, long value, long height, string keypath, string line_name, DateTime created_at)>
-				("SELECT u.tx_id, u.idx, u.scriptpubkey, u.value, u.height, ts.keypath, ts.line_name, u.created_at " +
-				"FROM conf_utxos u " +
-				"INNER JOIN tracked_scriptpubkeys ts ON u.code=ts.code AND u.scriptpubkey=ts.scriptpubkey " +
-				"WHERE u.code=@code AND u.wallet_id=@walletId", new { code = network.CryptoCode, walletId = trackedSource.GetLegacyWalletId(network) }))
+			foreach (var row in await conn.Connection.QueryAsync<(string tx_id, int idx, long value, string script, string keypath, long height)>
+				("SELECT tx_id, u.idx, value, script, keypath, height FROM conf_utxos u " +
+				"INNER JOIN tracked_scripts ts USING (code, script) " +
+				"WHERE u.code=@code AND ts.wallet_id=@walletId", new { code = network.CryptoCode, walletId = trackedSource.GetLegacyWalletId(network) }))
 			{
 				var txid = uint256.Parse(row.tx_id);
+				var keypath = KeyPath.Parse(row.keypath);
 				changes.Confirmed.UTXOs.Add(new UTXO()
 				{
 					Confirmations = (int)(changes.CurrentHeight - row.height + 1),
 					Index = row.idx,
 					Outpoint = new OutPoint(txid, row.idx),
-					KeyPath = KeyPath.Parse(row.keypath),
-					ScriptPubKey = Script.FromBytesUnsafe(Encoders.Hex.DecodeData(row.scriptpubkey)),
-					Timestamp = new DateTimeOffset(row.created_at),
+					KeyPath = keypath,
+					ScriptPubKey = Script.FromHex(row.script),
+					// TODO: Timestamp = new DateTimeOffset(row.created_at),
 					TransactionHash = txid,
 					Value = Money.Satoshis(row.value),
-					Feature = Enum.Parse<DerivationFeature>(row.line_name)
+					Feature = keyPathTemplates.GetDerivationFeature(keypath)
 				});
 			}
 

@@ -1,6 +1,7 @@
 ﻿#nullable enable
 using Dapper;
 using NBitcoin;
+using NBitcoin.DataEncoders;
 using NBXplorer.Configuration;
 using NBXplorer.DerivationStrategy;
 using System;
@@ -45,16 +46,6 @@ namespace NBXplorer
 			return await Connection.ExecuteAsync("INSERT INTO wallets VALUES (@id) ON CONFLICT DO NOTHING", new { id = walletId }) == 1;
 		}
 
-		record class ScriptPubKeyInsert(string code, string walletid, string scriptPubKey, string addr);
-		public async Task AddScriptPubKeys(string walletId, params Script[] scriptPubKeys)
-		{
-			var rows = scriptPubKeys
-				.Select(s => new ScriptPubKeyInsert(Network.CryptoCode, walletId, s.ToHex(), s.GetDestinationAddress(Network.NBitcoinNetwork).ToString()))
-				.ToList();
-			await Connection.ExecuteAsync("INSERT INTO scriptpubkeys VALUES (@code, @scriptPubKey, @addr) ON CONFLICT DO NOTHING", rows);
-			await Connection.ExecuteAsync("INSERT INTO scriptpubkeys_wallets VALUES (@code, @scriptPubKey, @walletid) ON CONFLICT DO NOTHING", rows);
-		}
-
 		public async Task SaveTransactions(Transaction[] transactions, uint256 blockId, DateTimeOffset? now)
 		{
 			var txs = transactions.Select(tx =>
@@ -65,9 +56,9 @@ namespace NBXplorer
 				indexed_at = now is null ? default : now.Value,
 			}).ToArray();
 			if (now is null)
-				await Connection.ExecuteAsync("INSERT INTO txs VALUES (@code, @id, @raw) ON CONFLICT (code, id) DO UPDATE SET raw = COALESCE(@raw, txs.raw)", txs);
+				await Connection.ExecuteAsync("INSERT INTO txs VALUES (@code, @id, @raw) ON CONFLICT (code, tx_id) DO UPDATE SET raw = COALESCE(@raw, txs.raw)", txs);
 			else
-				await Connection.ExecuteAsync("INSERT INTO txs VALUES (@code, @id, @raw, @indexed_at) ON CONFLICT (code, id) DO UPDATE SET indexed_at=@indexed_at, raw = COALESCE(@raw, txs.raw)", txs);
+				await Connection.ExecuteAsync("INSERT INTO txs VALUES (@code, @id, @raw, 'f', @indexed_at) ON CONFLICT (code, tx_id) DO UPDATE SET indexed_at=@indexed_at, raw = COALESCE(@raw, txs.raw), invalid = 'f'", txs);
 			if (blockId is not null)
 			{
 				var txs_blks = transactions.Select(tx =>
@@ -79,24 +70,23 @@ namespace NBXplorer
 				await Connection.ExecuteAsync("INSERT INTO txs_blks VALUES (@code, @id, @blk_id) IF CONFLICT DO NOTHING", txs_blks);
 			}
 		}
-		public async Task CreateDerivationLines(string walletId, string scheme, params (string lineName, KeyPathTemplate keyPathTemplate)[] lines)
+		public async Task CreateDescriptors(string walletId, Descriptor[] descriptors)
 		{
-			var rows = lines.Select(c => new { code = Network.CryptoCode, scheme = scheme, c.lineName, keyPathTemplate = c.keyPathTemplate.ToString() }).ToArray();
-			await Connection.ExecuteAsync("INSERT INTO derivation_lines VALUES (@code, @scheme, @lineName, @keyPathTemplate) ON CONFLICT DO NOTHING", rows);
+			var rows = descriptors.Select(c => new { code = Network.CryptoCode, descriptor = c.ToString(), walletId }).ToArray();
+			await Connection.ExecuteAsync("INSERT INTO descriptors VALUES (@code, @descriptor) ON CONFLICT DO NOTHING", rows);
+			await Connection.ExecuteAsync("INSERT INTO descriptors_wallets VALUES (@code, @descriptor, @walletId) ON CONFLICT DO NOTHING", rows);
 		}
 
-		public async Task CreateDerivation(string walletId, string scheme)
-		{
-			await Connection.ExecuteAsync("INSERT INTO derivations VALUES (@code, @scheme) ON CONFLICT DO NOTHING", new { code = Network.CryptoCode, scheme });
-			await Connection.ExecuteAsync("INSERT INTO derivations_wallets VALUES (@code, @scheme, @walletId) ON CONFLICT DO NOTHING", new { code = Network.CryptoCode, walletId, scheme });
-		}
-
-		record DerivationLinesScriptPubKeyInsert(string code, string scheme, string line_name, int idx, string keypath, string scriptpubkey);
-		public async Task<int> GenerateAddresses(string walletId, string scheme, string line, GenerateAddressQuery? query)
+		record DescriptorScriptInsert(string code, string descriptor, int idx, string script, string keypath, string addr);
+		public async Task<int> GenerateAddresses(Descriptor descriptor, GenerateAddressQuery? query)
 		{
 			query = query ?? new GenerateAddressQuery();
-
-			var unused = await Connection.ExecuteScalarAsync<int>("SELECT COUNT(NOT used) FROM derivation_lines_scripts WHERE code = @code AND scheme = @scheme AND line_name = @line", new { code = Network.CryptoCode, scheme, line });
+			var useds = await Connection.QueryAsync<bool>(
+				"SELECT s.used FROM descriptors_scripts ds " +
+				"INNER JOIN scripts s USING (code, script) " +
+				"WHERE ds.code=@code AND ds.descriptor=@descriptor " +
+				"LIMIT @limit", new { code = Network.CryptoCode, descriptor = descriptor.ToString(), limit = MinPoolSize });
+			var unused = useds.TakeWhile(u => !u).Count();
 			if (unused >= MinPoolSize)
 				return 0;
 			var toGenerate = Math.Max(0, MaxPoolSize - unused);
@@ -107,25 +97,49 @@ namespace NBXplorer
 			if (toGenerate == 0)
 				return 0;
 
-			var row = await Connection.QueryFirstAsync<(int next_index, string keypath_template)>("SELECT next_index, keypath_template FROM derivation_lines WHERE code=@code AND wallet_id=@walletId AND scheme=@scheme AND name=@line", new { code = Network.CryptoCode, walletId, scheme, line });
-			var keypathTemplate = KeyPathTemplate.Parse(row.keypath_template);
+			var row = await Connection.ExecuteScalarAsync<int?>("SELECT next_index FROM descriptors WHERE code=@code AND descriptor=@descriptor", new { code = Network.CryptoCode, descriptor = descriptor.ToString() });
+			if (row is null)
+				return 0;
+			var nextIndex = row.Value;
 
-			var legacyHeader = $"Legacy({Network.CryptoCode}):DERIVATIONSCHEME:";
-			var legacyScheme = scheme;
-			if (scheme.StartsWith(legacyHeader, StringComparison.OrdinalIgnoreCase))
-				legacyScheme = scheme.Substring(legacyHeader.Length);
-			var schemeObject = derivationStrategyFactory.Parse(legacyScheme);
-			var derivationLine = schemeObject.GetLineFor(keypathTemplate);
+			var line = descriptor.GetLineFor();
 			var scriptpubkeys = new Script[toGenerate];
-			var linesScriptpubkeys = new DerivationLinesScriptPubKeyInsert[toGenerate];
-			Parallel.For(row.next_index, row.next_index + toGenerate, i =>
+			var linesScriptpubkeys = new DescriptorScriptInsert[toGenerate];
+			var descStr = descriptor.ToString()!;
+			Parallel.For(nextIndex, nextIndex + toGenerate, i =>
 			{
-				var derivation = derivationLine.Derive((uint)i);
-				scriptpubkeys[i - row.next_index] = derivation.ScriptPubKey;
-				linesScriptpubkeys[i - row.next_index] = new DerivationLinesScriptPubKeyInsert(Network.CryptoCode, scheme, line, i, keypathTemplate.GetKeyPath(i, false).ToString(), derivation.ScriptPubKey.ToHex());
+				var derivation = line.Derive((uint)i);
+				scriptpubkeys[i - nextIndex] = derivation.ScriptPubKey;
+				linesScriptpubkeys[i - nextIndex] = new DescriptorScriptInsert(
+					Network.CryptoCode,
+					descStr,
+					i,
+					derivation.ScriptPubKey.ToHex(),
+					line.KeyPathTemplate.GetKeyPath(i, false).ToString(),
+					derivation.ScriptPubKey.GetDestinationAddress(Network.NBitcoinNetwork).ToString());
 			});
-			await AddScriptPubKeys(walletId, scriptpubkeys);
-			return await Connection.ExecuteAsync("INSERT INTO derivation_lines_scripts VALUES (@code, @scheme, @line_name, @idx, @keypath, @scriptpubkey) ON CONFLICT DO NOTHING", linesScriptpubkeys);
+			await Connection.ExecuteAsync("INSERT INTO scripts VALUES (@code, @script, @addr) ON CONFLICT DO NOTHING", linesScriptpubkeys);
+			return await Connection.ExecuteAsync("INSERT INTO descriptors_scripts VALUES (@code, @descriptor, @idx, @script, @keypath) ON CONFLICT DO NOTHING", linesScriptpubkeys);
+		}
+
+		record SpentUTXORow(System.String code, System.String tx_id, System.Int32 idx, System.String script, System.Int64 value, System.DateTime created_at, string spent_outpoint);
+		public Task<Dictionary<OutPoint, TxOut>> GetUTXOs(IList<OutPoint> outPoints)
+		{
+			return GetUTXOs(outPoints.Select(o => o.ToString()).ToArray());
+		}
+		public async Task<Dictionary<OutPoint, TxOut>> GetUTXOs(IList<string> outPoints)
+		{
+			Dictionary<OutPoint, TxOut> result = new Dictionary<OutPoint, TxOut>();
+			foreach (var row in await Connection.QueryAsync<SpentUTXORow>(
+"SELECT *, to_outpoint(tx_id, idx) spent_outpoint FROM outs " +
+"WHERE code = @code AND to_outpoint(tx_id, idx) = ANY(@outputQuery)", new { code = Network.CryptoCode, outputQuery = outPoints }))
+			{
+				var txout = this.Network.NBitcoinNetwork.Consensus.ConsensusFactory.CreateTxOut();
+				txout.Value = Money.Satoshis(row.value);
+				txout.ScriptPubKey = Script.FromBytesUnsafe(Encoders.Hex.DecodeData(row.script));
+				result.TryAdd(new OutPoint(uint256.Parse(row.tx_id), row.idx), txout);
+			}
+			return result;
 		}
 	}
 }
