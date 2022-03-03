@@ -13,6 +13,8 @@ using NBitcoin.DataEncoders;
 using System.Data.Common;
 using NBXplorer.Logging;
 using Microsoft.Extensions.Logging;
+using Npgsql;
+using NBitcoin.RPC;
 
 namespace NBXplorer
 {
@@ -20,6 +22,7 @@ namespace NBXplorer
 	{
 		Dictionary<string, RepositoryLegacy> _Repositories = new Dictionary<string, RepositoryLegacy>();
 		ExplorerConfiguration _Configuration;
+
 		public Task StartCompletion => Task.CompletedTask;
 
 		public NBXplorerNetworkProvider Networks { get; }
@@ -53,7 +56,8 @@ namespace NBXplorer
 				var settings = GetChainSetting(net);
 				if (settings != null)
 				{
-					var repo = net.NBitcoinNetwork.NetworkSet == Liquid.Instance ? throw new NotSupportedException() : new RepositoryLegacy(ConnectionFactory, net, KeyPathTemplates);
+					var repo = net.NBitcoinNetwork.NetworkSet == Liquid.Instance ? throw new NotSupportedException() :
+						new RepositoryLegacy(ConnectionFactory, net, KeyPathTemplates, settings.RPC);
 					repo.MaxPoolSize = _Configuration.MaxGapSize;
 					repo.MinPoolSize = _Configuration.MinGapSize;
 					repo.MinUtxoValue = settings.MinUtxoValue;
@@ -75,12 +79,15 @@ namespace NBXplorer
 	public class RepositoryLegacy : IRepository
 	{
 		private DbConnectionFactory connectionFactory;
+		private readonly RPCClient rpc;
+
 		public DbConnectionFactory ConnectionFactory => connectionFactory;
-		public RepositoryLegacy(DbConnectionFactory connectionFactory, NBXplorerNetwork network, KeyPathTemplates keyPathTemplates)
+		public RepositoryLegacy(DbConnectionFactory connectionFactory, NBXplorerNetwork network, KeyPathTemplates keyPathTemplates, RPCClient rpc)
 		{
 			this.connectionFactory = connectionFactory;
 			Network = network;
 			KeyPathTemplates = keyPathTemplates;
+			this.rpc = rpc;
 			Serializer = new Serializer(network);
 		}
 
@@ -328,18 +335,6 @@ namespace NBXplorer
 			return matches.Values.Count == 0 ? Array.Empty<TrackedTransaction>() : matches.Values.ToArray();
 		}
 
-		private TrackedTransaction GetTrackedTransaction(Dictionary<(TrackedTransactionKey TrackedTransactionKey, string WalletId), TrackedTransaction> trackedPerKey, string walletId, uint256 blockId, Transaction tx)
-		{
-			var key = new TrackedTransactionKey(tx.GetHash(), blockId, false);
-			if (!trackedPerKey.TryGetValue((key, walletId), out var trackedTransaction))
-			{
-				trackedTransaction = new TrackedTransaction(key, GetTrackedSource(walletId), tx, new Dictionary<Script, KeyPath>());
-				trackedPerKey.Add((key, walletId), trackedTransaction);
-			}
-
-			return trackedTransaction;
-		}
-
 		private TrackedSource GetTrackedSource(string wallet_id)
 		{
 			var legacyHeader = $"Legacy({Network.CryptoCode}):";
@@ -353,12 +348,6 @@ namespace NBXplorer
 		{
 			return GetMatches(new[] { tx }, blockId, now, useCache);
 		}
-
-		public Task<TMetadata> GetMetadata<TMetadata>(TrackedSource source, string key) where TMetadata : class
-		{
-			throw new NotImplementedException();
-		}
-
 
 		public async Task<Dictionary<OutPoint, TxOut>> GetOutPointToTxOut(IList<OutPoint> outPoints)
 		{
@@ -381,50 +370,66 @@ namespace NBXplorer
 			}};
 		}
 
-		public async Task<TrackedTransaction[]> GetTransactions(TrackedSource trackedSource, uint256 txId = null, CancellationToken cancellation = default)
+		public async Task<TrackedTransaction[]> GetTransactions(TrackedSource trackedSource, uint256 txId = null, bool needTx = true, CancellationToken cancellation = default)
 		{
 			await using var connection = await connectionFactory.CreateConnectionHelper(Network);
 			var tip = await connection.GetTip();
 			if (tip is null)
 				return Array.Empty<TrackedTransaction>();
 			var utxos = await 
-				connection.Connection.QueryAsync<(string tx_id, byte[] raw, string block_id, int idx, string script, long value, DateTime seen_at)>(
-				"SELECT t.tx_id, t.raw, t.blk_id, o.idx, o.script, o.value, t.seen_at " +
+				connection.Connection.QueryAsync<(string tx_id, string block_id, string source, string out_tx_id, int idx, string script, long value, bool immature, string keypath, DateTime seen_at)>(
+				"SELECT io.tx_id, io.blk_id, io.source, out_tx_id, io.idx, io.script, io.value, io.immature, ts.keypath, io.seen_at " +
 				"FROM tracked_scripts ts " +
-				"JOIN outs o USING (code, script) " +
-				"JOIN txs t ON t.code = o.code AND t.tx_id = o.tx_id " +
+				"JOIN ins_outs io USING (code, script) " +
 				"WHERE ts.code=@code AND ts.wallet_id=@walletId", new { code = Network.CryptoCode, walletId = trackedSource.GetLegacyWalletId(Network) });
 			utxos.TryGetNonEnumeratedCount(out int c);
 			var trackedById = new Dictionary<string, TrackedTransaction>(c);
+			var txIdStr = txId?.ToString();
 			foreach (var utxo in utxos)
 			{
-				var tracked = GetTrackedTransaction(trackedSource, utxo.tx_id, utxo.raw, utxo.block_id, trackedById);
-				var txout = Network.NBitcoinNetwork.Consensus.ConsensusFactory.CreateTxOut();
-				txout.Value = Money.Satoshis(utxo.value);
-				txout.ScriptPubKey = Script.FromHex(utxo.script);
-				tracked.ReceivedCoins.Add(new Coin(new OutPoint(tracked.Key.TxId, utxo.idx), txout));
+				if (txIdStr != null && utxo.tx_id != txIdStr)
+					continue;
+				var tracked = GetTrackedTransaction(trackedSource, utxo.tx_id, utxo.block_id, utxo.seen_at, trackedById);
+				if (utxo.source == "OUTPUT")
+				{
+					var txout = Network.NBitcoinNetwork.Consensus.ConsensusFactory.CreateTxOut();
+					txout.Value = Money.Satoshis(utxo.value);
+					txout.ScriptPubKey = Script.FromHex(utxo.script);
+					tracked.ReceivedCoins.Add(new Coin(new OutPoint(tracked.Key.TxId, utxo.idx), txout));
+					tracked.IsCoinBase = utxo.immature;
+					if (utxo.keypath is string)
+						tracked.KnownKeyPathMapping.Add(txout.ScriptPubKey, KeyPath.Parse(utxo.keypath));
+				}
+				else
+				{
+					tracked.SpentOutpoints.Add(new OutPoint(uint256.Parse(utxo.out_tx_id), utxo.idx));
+				}
 			}
-			return trackedById.Values.ToArray();
+
+			if (needTx)
+			{
+				var txRaws = await connection.Connection.QueryAsync<(string tx_id, byte[] raw)>(
+					"SELECT	tx_id, raw FROM txs WHERE code=@code AND tx_id=ANY(@txId);", new { code = Network.CryptoCode, txId = trackedById.Keys.AsList() });
+				foreach (var row in txRaws)
+				{
+					trackedById[row.tx_id].Transaction = Transaction.Load(row.raw, Network.NBitcoinNetwork);
+				}
+			}
+
+			return trackedById.Values.Select(c =>
+			{
+				c.KnownKeyPathMappingUpdated();
+				return c;
+			}).ToArray();
 		}
 
-		private TrackedTransaction GetTrackedTransaction(TrackedSource trackedSource, string tx_id, byte[] raw, string block_id, Dictionary<string, TrackedTransaction> trackedById)
+		private TrackedTransaction GetTrackedTransaction(TrackedSource trackedSource, string tx_id, string block_id, DateTime seenAt, Dictionary<string, TrackedTransaction> trackedById)
 		{
 			if (trackedById.TryGetValue(tx_id, out var tracked))
 				return tracked;
-			TrackedTransactionKey key;
-			bool hasTx = raw is not null;
-			if (block_id is not null)
-			{
-				key = new TrackedTransactionKey(uint256.Parse(tx_id), uint256.Parse(block_id), !hasTx);
-			}
-			else
-			{
-				key = new TrackedTransactionKey(uint256.Parse(tx_id), null, !hasTx);
-			}
-			if (hasTx)
-				tracked = CreateTrackedTransaction(trackedSource, key, Transaction.Load(raw, Network.NBitcoinNetwork), new Dictionary<Script, KeyPath>());
-			else
-				tracked = CreateTrackedTransaction(trackedSource, key, null as IEnumerable<Coin>, new Dictionary<Script, KeyPath>());
+			TrackedTransactionKey key = new TrackedTransactionKey(uint256.Parse(tx_id), block_id is null ? null : uint256.Parse(block_id), true);
+			tracked = CreateTrackedTransaction(trackedSource, key, null as IEnumerable<Coin>, new Dictionary<Script, KeyPath>());
+			tracked.FirstSeen = seenAt;
 			trackedById.Add(tx_id, tracked);
 			return tracked;
 		}
@@ -432,7 +437,36 @@ namespace NBXplorer
 		public async Task<KeyPathInformation> GetUnused(DerivationStrategyBase strategy, DerivationFeature derivationFeature, int n, bool reserve)
 		{
 			await using var connection = await connectionFactory.CreateConnectionHelper(Network);
-			return await connection.GetUnused(new LegacyDescriptor(strategy, KeyPathTemplates.GetKeyPathTemplate(derivationFeature)), n, reserve);
+			 var keyInfo = await connection.GetUnused(new LegacyDescriptor(strategy, KeyPathTemplates.GetKeyPathTemplate(derivationFeature)), n, reserve);
+			if (keyInfo != null)
+				await ImportAddressToRPC(keyInfo.TrackedSource, keyInfo.Address, keyInfo.KeyPath);
+			return keyInfo;
+		}
+		private async Task ImportAddressToRPC(TrackedSource trackedSource, BitcoinAddress address, KeyPath keyPath)
+		{
+			var shouldImportRPC = (await GetMetadata<string>(trackedSource, WellknownMetadataKeys.ImportAddressToRPC)).AsBoolean();
+			if (!shouldImportRPC)
+				return;
+			var accountKey = await GetMetadata<BitcoinExtKey>(trackedSource, WellknownMetadataKeys.AccountHDKey);
+			await ImportAddressToRPC(accountKey, address, keyPath);
+		}
+		private async Task ImportAddressToRPC(BitcoinExtKey accountKey, BitcoinAddress address, KeyPath keyPath)
+		{
+			if (accountKey != null)
+			{
+				await rpc.ImportPrivKeyAsync(accountKey.Derive(keyPath).PrivateKey.GetWif(Network.NBitcoinNetwork), null, false);
+			}
+			else
+			{
+				try
+				{
+					await rpc.ImportAddressAsync(address, null, false);
+				}
+				catch (RPCException) // Probably the private key has already been imported
+				{
+
+				}
+			}
 		}
 
 		public ValueTask<bool> MigrateOutPoints(string directory, CancellationToken cancellationToken = default)
@@ -450,9 +484,31 @@ namespace NBXplorer
 			return Task.CompletedTask;
 		}
 
-		public Task Prune(TrackedSource trackedSource, IEnumerable<TrackedTransaction> prunable)
+		public async Task Prune(TrackedSource trackedSource, IEnumerable<TrackedTransaction> prunable)
 		{
-			throw new NotImplementedException();
+			if (prunable.TryGetNonEnumeratedCount(out var c) && c == 0)
+				return;
+			await using var helper = await GetConnection();
+			var receivedCoinsToDelete = 
+				prunable
+				.SelectMany(c => c.ReceivedCoins)
+				.Select(c => new
+				{
+					code = Network.CryptoCode,
+					txId = c.Outpoint.Hash.ToString(),
+					idx = (int)c.Outpoint.N
+				}).ToArray();
+			var spentCoins =
+				prunable
+				.SelectMany(c => c.SpentOutpoints)
+				.Select(c => new
+				{
+					code = Network.CryptoCode,
+					txId = c.Hash.ToString(),
+					idx = (int)c.N
+				}).ToArray();
+			await helper.Connection.ExecuteAsync("DELETE FROM outs WHERE code=@code AND tx_id=@txId AND idx=@idx", receivedCoinsToDelete);
+			await helper.Connection.ExecuteAsync("DELETE FROM ins WHERE code=@code AND spent_tx_id=@txId AND spent_idx=@idx", spentCoins);
 		}
 
 		public async Task<long> SaveEvent(NewEventBase evt)
@@ -506,9 +562,25 @@ namespace NBXplorer
 			}
 		}
 
-		public Task SaveMetadata<TMetadata>(TrackedSource source, string key, TMetadata value) where TMetadata : class
+		public async Task SaveMetadata<TMetadata>(TrackedSource source, string key, TMetadata value) where TMetadata : class
 		{
-			throw new NotImplementedException();
+			await using var helper = await connectionFactory.CreateConnectionHelper(Network);
+			var wid = source.GetLegacyWalletId(Network);
+			try
+			{
+				await helper.SetMetadata(wid, key, value);
+			}
+			catch (PostgresException ex) when (ex.ConstraintName == "wallet_metadata_wallet_id_fkey")
+			{
+				await helper.CreateWallet(wid);
+				await helper.SetMetadata(wid, key, value);
+			}
+		}
+		public async Task<TMetadata> GetMetadata<TMetadata>(TrackedSource source, string key) where TMetadata : class
+		{
+			await using var helper = await connectionFactory.CreateConnectionHelper(Network);
+			var wid = source.GetLegacyWalletId(Network);
+			return await helper.GetMetadata<TMetadata>(wid, key);
 		}
 
 		public async Task<List<Repository.SavedTransaction>> SaveTransactions(DateTimeOffset now, Transaction[] transactions, uint256 blockHash)

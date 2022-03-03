@@ -1005,7 +1005,7 @@ namespace NBXplorer
 			get; set;
 		} = Money.Satoshis(1);
 
-		public async Task<TrackedTransaction[]> GetTransactions(TrackedSource trackedSource, uint256 txId = null, CancellationToken cancellation = default)
+		public async Task<TrackedTransaction[]> GetTransactions(TrackedSource trackedSource, uint256 txId = null, bool needTx = true, CancellationToken cancellation = default)
 		{
 			Dictionary<uint256, long> firstSeenList = new Dictionary<uint256, long>();
 			HashSet<ITrackedTransactionSerializable> needRemove = new HashSet<ITrackedTransactionSerializable>();

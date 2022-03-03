@@ -607,7 +607,7 @@ namespace NBXplorer.Controllers
 			var response = new GetTransactionsResponse();
 			int currentHeight = chain.Height;
 			response.Height = currentHeight;
-			var txs = await GetAnnotatedTransactions(repo, chain, trackedSource, txId);
+			var txs = await GetAnnotatedTransactions(repo, chain, trackedSource, includeTransaction, txId);
 			foreach (var item in new[]
 			{
 					new
@@ -780,7 +780,6 @@ namespace NBXplorer.Controllers
 
 		[HttpPost]
 		[Route("cryptos/{cryptoCode}/derivations/{derivationScheme}/metadata/{key}")]
-		[VersionConstraint(NBXplorerVersion.V1)]
 		public async Task<IActionResult> SetMetadata(string cryptoCode,
 			[ModelBinder(BinderType = typeof(DerivationStrategyModelBinder))]
 			DerivationStrategyBase derivationScheme, string key,
@@ -795,7 +794,6 @@ namespace NBXplorer.Controllers
 		}
 		[HttpGet]
 		[Route("cryptos/{cryptoCode}/derivations/{derivationScheme}/metadata/{key}")]
-		[VersionConstraint(NBXplorerVersion.V1)]
 		public async Task<IActionResult> GetMetadata(string cryptoCode,
 			[ModelBinder(BinderType = typeof(DerivationStrategyModelBinder))]
 			DerivationStrategyBase derivationScheme, string key)
@@ -811,7 +809,6 @@ namespace NBXplorer.Controllers
 
 		[HttpPost]
 		[Route("cryptos/{cryptoCode}/derivations/{derivationScheme}/utxos/wipe")]
-		[VersionConstraint(NBXplorerVersion.V1)]
 		public async Task<IActionResult> Wipe(
 			string cryptoCode,
 			[ModelBinder(BinderType = typeof(DerivationStrategyModelBinder))]
@@ -828,7 +825,6 @@ namespace NBXplorer.Controllers
 
 		[HttpPost]
 		[Route("cryptos/{cryptoCode}/derivations/{derivationScheme}/utxos/scan")]
-		[VersionConstraint(NBXplorerVersion.V1)]
 		public IActionResult ScanUTXOSet(
 			string cryptoCode,
 			[ModelBinder(BinderType = typeof(DerivationStrategyModelBinder))]
@@ -868,14 +864,14 @@ namespace NBXplorer.Controllers
 		[HttpGet]
 		[Route("cryptos/{cryptoCode}/derivations/{derivationScheme}/balance")]
 		[Route("cryptos/{cryptoCode}/addresses/{address}/balance")]
-		[VersionConstraint(NBXplorerVersion.V1)]
+		//[VersionConstraint(NBXplorerVersion.V1)]
 		public async Task<IActionResult> GetBalance(string cryptoCode,
 			[ModelBinder(BinderType = typeof(DerivationStrategyModelBinder))]
 			DerivationStrategyBase derivationScheme,
 			[ModelBinder(BinderType = typeof(BitcoinAddressModelBinder))]
 			BitcoinAddress address)
 		{
-			var getTransactionsResult = await GetTransactions(cryptoCode, derivationScheme, address);
+			var getTransactionsResult = await GetTransactions(cryptoCode, derivationScheme, address, includeTransaction: false);
 			var jsonResult = getTransactionsResult as JsonResult;
 			var transactions = jsonResult?.Value as GetTransactionsResponse;
 			if (transactions == null)
@@ -908,7 +904,7 @@ namespace NBXplorer.Controllers
 		[HttpGet]
 		[Route("cryptos/{cryptoCode}/derivations/{derivationScheme}/utxos")]
 		[Route("cryptos/{cryptoCode}/addresses/{address}/utxos")]
-		[VersionConstraint(NBXplorerVersion.V1)]
+		//[VersionConstraint(NBXplorerVersion.V1)]
 		public async Task<IActionResult> GetUTXOs(
 			string cryptoCode,
 			[ModelBinder(BinderType = typeof(DerivationStrategyModelBinder))]
@@ -928,7 +924,7 @@ namespace NBXplorer.Controllers
 
 			changes = new UTXOChanges();
 			changes.CurrentHeight = chain.Height;
-			var transactions = await GetAnnotatedTransactions(repo, chain, trackedSource);
+			var transactions = await GetAnnotatedTransactions(repo, chain, trackedSource, false);
 
 			changes.Confirmed = ToUTXOChange(transactions.ConfirmedState);
 			changes.Confirmed.SpentOutpoints.Clear();
@@ -978,9 +974,9 @@ namespace NBXplorer.Controllers
 			}
 		}
 
-		private async Task<AnnotatedTransactionCollection> GetAnnotatedTransactions(IRepository repo, SlimChain chain, TrackedSource trackedSource, uint256 txId = null)
+		private async Task<AnnotatedTransactionCollection> GetAnnotatedTransactions(IRepository repo, SlimChain chain, TrackedSource trackedSource, bool needTx, uint256 txId = null)
 		{
-			var transactions = await repo.GetTransactions(trackedSource, txId, this.HttpContext.RequestAborted);
+			var transactions = await repo.GetTransactions(trackedSource, txId, needTx, this.HttpContext.RequestAborted);
 
 			// If the called is interested by only a single txId, we need to fetch the parents as well
 			if (txId != null)
@@ -1000,7 +996,6 @@ namespace NBXplorer.Controllers
 
 		[HttpPost]
 		[Route("cryptos/{cryptoCode}/transactions")]
-		[VersionConstraint(NBXplorerVersion.V1)]
 		public async Task<BroadcastResult> Broadcast(
 			string cryptoCode,
 			[ModelBinder(BinderType = typeof(DerivationStrategyModelBinder))]
@@ -1050,7 +1045,7 @@ namespace NBXplorer.Controllers
 				if (trackedSource != null && ex.Message.StartsWith("Missing inputs", StringComparison.OrdinalIgnoreCase))
 				{
 					Logs.Explorer.LogInformation($"{network.CryptoCode}: Trying to broadcast unconfirmed of the wallet");
-					var transactions = await GetAnnotatedTransactions(repo, chain, trackedSource);
+					var transactions = await GetAnnotatedTransactions(repo, chain, trackedSource, true);
 					foreach (var existing in transactions.UnconfirmedTransactions)
 					{
 						var t = existing.Record.Transaction ?? (await repo.GetSavedTransactions(existing.Record.TransactionHash)).Select(c => c.Transaction).FirstOrDefault();
@@ -1198,7 +1193,6 @@ namespace NBXplorer.Controllers
 
 		[HttpPost]
 		[Route("cryptos/{cryptoCode}/derivations/{derivationScheme}/prune")]
-		[VersionConstraint(NBXplorerVersion.V1)]
 		public async Task<PruneResponse> Prune(
 			string cryptoCode,
 			[ModelBinder(BinderType = typeof(DerivationStrategyModelBinder))]
@@ -1210,7 +1204,7 @@ namespace NBXplorer.Controllers
 			var network = GetNetwork(cryptoCode, false);
 			var chain = ChainProvider.GetChain(network);
 			var repo = RepositoryProvider.GetRepository(network);
-			var transactions = await GetAnnotatedTransactions(repo, chain, trackedSource);
+			var transactions = await GetAnnotatedTransactions(repo, chain, trackedSource, false);
 			var state = transactions.ConfirmedState;
 			var prunableIds = new HashSet<uint256>();
 

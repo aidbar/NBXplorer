@@ -35,7 +35,7 @@ namespace NBXplorer
 		Task<TMetadata> GetMetadata<TMetadata>(TrackedSource source, string key) where TMetadata : class;
 		Task<Dictionary<OutPoint, TxOut>> GetOutPointToTxOut(IList<OutPoint> outPoints);
 		Task<Repository.SavedTransaction[]> GetSavedTransactions(uint256 txid);
-		Task<TrackedTransaction[]> GetTransactions(TrackedSource trackedSource, uint256 txId = null, CancellationToken cancellation = default);
+		Task<TrackedTransaction[]> GetTransactions(TrackedSource trackedSource, uint256 txId = null, bool needTx = true, CancellationToken cancellation = default);
 		Task<KeyPathInformation> GetUnused(DerivationStrategyBase strategy, DerivationFeature derivationFeature, int n, bool reserve);
 		ValueTask<bool> MigrateOutPoints(string directory, CancellationToken cancellationToken = default);
 		ValueTask<int> MigrateSavedTransactions(CancellationToken cancellationToken = default);

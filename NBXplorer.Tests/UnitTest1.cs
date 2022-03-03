@@ -296,10 +296,12 @@ namespace NBXplorer.Tests
 			}
 		}
 
-		[Fact]
-		public void CanEasilySpendUTXOs()
+		[Theory]
+		[InlineData(Backend.Postgres)]
+		[InlineData(Backend.DBTrie)]
+		public void CanEasilySpendUTXOs(Backend backend)
 		{
-			using (var tester = ServerTester.Create())
+			using (var tester = ServerTester.Create(backend))
 			{
 				var userExtKey = new ExtKey();
 				var userDerivationScheme = tester.Client.Network.DerivationStrategyFactory.CreateDirectDerivationStrategy(userExtKey.Neuter(), new DerivationStrategyOptions()
@@ -359,10 +361,12 @@ namespace NBXplorer.Tests
 			}
 		}
 
-		[Fact]
-		public void CanCreatePSBT()
+		[Theory]
+		[InlineData(Backend.Postgres)]
+		[InlineData(Backend.DBTrie)]
+		public void CanCreatePSBT(Backend backend)
 		{
-			using (var tester = ServerTester.Create())
+			using (var tester = ServerTester.Create(backend))
 			{
 				// We need to check if we can get utxo information of segwit utxos
 				var segwit = tester.RPC.GetNewAddress(new GetNewAddressRequest()
@@ -391,7 +395,7 @@ namespace NBXplorer.Tests
 			}
 		}
 
-		private static void CanCreatePSBTCore(ServerTester tester, ScriptPubKeyType type)
+		private static async void CanCreatePSBTCore(ServerTester tester, ScriptPubKeyType type)
 		{
 			var userExtKey = new ExtKey();
 			var userDerivationScheme = tester.Client.Network.DerivationStrategyFactory.CreateDirectDerivationStrategy(userExtKey.Neuter(), new DerivationStrategyOptions()
@@ -453,15 +457,26 @@ namespace NBXplorer.Tests
 				Assert.Equal(-(Money.Coins(0.5m) + (substractFee ? Money.Zero : fee)), psbt.PSBT.GetBalance(userDerivationScheme, userExtKey));
 				psbt.PSBT.Finalize();
 				var tx = psbt.PSBT.ExtractTransaction();
+				Logs.Tester.LogInformation("INPUT COUNT: " + tx.Inputs.Count + " " + i);
+				foreach (var iii in tx.Inputs)
+				{
+					Logs.Tester.LogInformation("Spent: " + iii.PrevOut);
+				}
 				Assert.True(tester.Client.Broadcast(tx).Success);
 				tester.Notifications.WaitForTransaction(userDerivationScheme, tx.GetHash());
 				utxos = tester.Client.GetUTXOs(userDerivationScheme);
-
+				Logs.Tester.LogInformation("UTXO COUNT: " + utxos.GetUnspentCoins().Length);
+				foreach (var ooo in utxos.GetUnspentCoins())
+				{
+					Logs.Tester.LogInformation("Left: " + ooo.Outpoint);
+				}
 				if (i == 0)
 					Assert.Equal(2, utxos.GetUnspentCoins().Length);
 				Assert.Contains(utxos.GetUnspentCoins(), u => u.ScriptPubKey == psbt.ChangeAddress.ScriptPubKey);
 				Assert.Contains(utxos.Unconfirmed.UTXOs, u => u.ScriptPubKey == psbt.ChangeAddress.ScriptPubKey && u.Feature == DerivationFeature.Change);
 			}
+			utxos = tester.Client.GetUTXOs(userDerivationScheme);
+			Assert.Equal(1, utxos.GetUnspentCoins().Length);
 
 			var balance = tester.Client.GetUTXOs(userDerivationScheme).GetUnspentCoins().Select(c => c.Amount).Sum();
 			var psbt2 = tester.Client.CreatePSBT(userDerivationScheme, new CreatePSBTRequest()
@@ -640,6 +655,7 @@ namespace NBXplorer.Tests
 				MinConfirmations = 1
 			}));
 			Assert.Equal("not-enough-funds", ex.Error.Code);
+
 			Logs.Tester.LogInformation("But if we mine, this should become ok");
 			tester.Explorer.Generate(1);
 			tester.WaitSynchronized();
@@ -662,6 +678,7 @@ namespace NBXplorer.Tests
 			});
 			// We always signed with lowR so this should be always true
 			Assert.True(psbt2.Suggestions.ShouldEnforceLowR);
+
 			Logs.Tester.LogInformation("Let's check includeOutpoint and excludeOutpoints");
 			txId = tester.SendToAddress(newAddress.ScriptPubKey, Money.Coins(1.0m));
 			tester.Notifications.WaitForTransaction(userDerivationScheme, txId);
@@ -1508,10 +1525,12 @@ namespace NBXplorer.Tests
 				Assert.Equal(ids[0], Assert.IsType<NewBlockEvent>(allEvents.Last()).Hash);
 			}
 		}
-		[Fact]
-		public void CanGetAndSetMetadata()
+		[Theory]
+		[InlineData(Backend.Postgres)]
+		[InlineData(Backend.DBTrie)]
+		public void CanGetAndSetMetadata(Backend backend)
 		{
-			using (var tester = ServerTester.Create())
+			using (var tester = ServerTester.Create(backend))
 			{
 				tester.Client.WaitServerStarted();
 				var key = new BitcoinExtKey(new ExtKey(), tester.Network);
@@ -1530,17 +1549,22 @@ namespace NBXplorer.Tests
 
 				tester.Client.SetMetadata<TestMetadata>(pubkey, "test", null);
 				Assert.Null(tester.Client.GetMetadata<TestMetadata>(pubkey, "test"));
+
+				tester.Client.SetMetadata(pubkey, "test3", true);
+				Assert.True(tester.Client.GetMetadata<bool>(pubkey, "test3"));
 			}
 		}
 
 		PruneRequest PruneTheMost = new PruneRequest() { DaysToKeep = 0.0 };
-		[Fact]
-		public void CanPrune()
+		[Theory]
+		[InlineData(Backend.Postgres)]
+		[InlineData(Backend.DBTrie)]
+		public void CanPrune(Backend backend)
 		{
 			// In this test we have fundingTxId with 2 output and spending1
 			// We make sure that only once the 2 outputs of fundingTxId have been consumed
 			// fundingTxId get pruned
-			using (var tester = ServerTester.Create())
+			using (var tester = ServerTester.Create(backend))
 			{
 				tester.Client.WaitServerStarted();
 				var key = new BitcoinExtKey(new ExtKey(), tester.Network);
@@ -1642,13 +1666,15 @@ namespace NBXplorer.Tests
 			return tx;
 		}
 
-		[Fact]
-		public void CanPrune2()
+		[Theory]
+		[InlineData(Backend.Postgres)]
+		[InlineData(Backend.DBTrie)]
+		public void CanPrune2(Backend backend)
 		{
 			// In this test we have fundingTxId with 2 output and spending1
 			// We make sure that if only 1 outputs of fundingTxId have been consumed
 			// spending1 does not get pruned, even if its output got consumed
-			using (var tester = ServerTester.Create())
+			using (var tester = ServerTester.Create(backend))
 			{
 				tester.Client.WaitServerStarted();
 				var key = new BitcoinExtKey(new ExtKey(), tester.Network);
@@ -2832,10 +2858,12 @@ namespace NBXplorer.Tests
 				Assert.Contains(transactions.ConfirmedTransactions.Transactions, u => u.TransactionId == minedTxId);
 			}
 		}
-		[Fact]
-		public void CanCacheTransactions()
+		[Theory]
+		[InlineData(Backend.Postgres)]
+		[InlineData(Backend.DBTrie)]
+		public void CanCacheTransactions(Backend backend)
 		{
-			using (var tester = ServerTester.Create())
+			using (var tester = ServerTester.Create(backend))
 			{
 				var key = new BitcoinExtKey(new ExtKey(), tester.Network);
 				var pubkey = tester.CreateDerivationStrategy(key.Neuter());

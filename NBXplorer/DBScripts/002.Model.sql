@@ -186,6 +186,13 @@ PRIMARY KEY (code, descriptor, wallet_id),
 FOREIGN KEY (code, descriptor) REFERENCES descriptors ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS wallet_metadata (
+wallet_id TEXT NOT NULL REFERENCES wallets ON DELETE CASCADE,
+key TEXT NOT NULL,
+data JSONB NOT NULL,
+PRIMARY KEY (wallet_id, key)
+);
+
 CREATE TABLE IF NOT EXISTS evts (
   id SERIAL NOT NULL PRIMARY KEY,
   code TEXT NOT NULL,
@@ -235,17 +242,15 @@ FROM scripts_wallets sw
 INNER JOIN scripts s USING (code, script);
 
 
-CREATE OR REPLACE VIEW unconf_ins_outs AS
-SELECT o.code, o.tx_id, 'OUTPUT' source, o.tx_id out_tx_id, o.idx, o.script, o.value, t.seen_at
+CREATE OR REPLACE VIEW ins_outs AS
+SELECT o.code, o.tx_id, t.blk_id, 'OUTPUT' source, o.tx_id out_tx_id, o.idx, o.script, o.value, o.immature, t.seen_at
 FROM outs o
 JOIN txs t USING (code, tx_id)
-WHERE t.blk_id IS NULL
 UNION ALL
-SELECT i.code, i.input_tx_id tx_id, 'INPUT', i.spent_tx_id out_tx_id, i.spent_idx, o.script, o.value, t.seen_at
+SELECT i.code, i.input_tx_id tx_id, t.blk_id, 'INPUT', i.spent_tx_id out_tx_id, i.spent_idx, o.script, o.value, 'f', t.seen_at
 FROM ins i
 JOIN outs o ON i.code=o.code AND i.spent_tx_id=o.tx_id AND i.spent_idx=o.idx
-JOIN txs t ON i.code=t.code AND i.input_tx_id=t.tx_id 
-WHERE t.blk_id IS NULL;
+JOIN txs t ON i.code=t.code AND i.input_tx_id=t.tx_id;
 
 -- We could replace this with a simple UPDATE, but it doesn't take the right index.
 -- In practice, this function will rarely modify any data, this make sure the index outs_code_immature is used.

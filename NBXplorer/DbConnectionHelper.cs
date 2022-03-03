@@ -228,5 +228,20 @@ namespace NBXplorer
 				return null;
 			return new SlimChainedBlock(uint256.Parse(row.blk_id), uint256.Parse(row.prev_id), (int)row.height);
 		}
+
+		public async Task SetMetadata<TMetadata>(string walletId, string key, TMetadata value) where TMetadata : class
+		{
+			if (value is null)
+				await Connection.ExecuteAsync("DELETE FROM wallet_metadata WHERE wallet_id=@walletId AND key=@key", new { walletId, key });
+			else
+				await Connection.ExecuteAsync("INSERT INTO wallet_metadata VALUES (@walletId, @key, @data::JSONB) ON CONFLICT (wallet_id, key) DO UPDATE SET data=@data::JSONB", new { walletId, key, data = Network.Serializer.ToString(value) });
+		}
+		public async Task<TMetadata?> GetMetadata<TMetadata>(string walletId, string key) where TMetadata : class
+		{
+			var result = await Connection.ExecuteScalarAsync<string?>("SELECT data FROM wallet_metadata WHERE wallet_id=@walletId AND key=@key", new { walletId, key });
+			if (result is null)
+				return null;
+			return Network.Serializer.ToObject<TMetadata>(result);
+		}
 	}
 }

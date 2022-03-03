@@ -97,7 +97,7 @@ namespace NBXplorer
 
 		public Transaction Transaction
 		{
-			get;
+			get; set;
 		}
 
 		public TrackedTransactionKey Key { get; }
@@ -113,7 +113,20 @@ namespace NBXplorer
 		{
 			get; set;
 		}
-		public bool IsCoinBase => Transaction?.IsCoinBase is true;
+		//public bool IsCoinBase => Transaction?.IsCoinBase is true;
+
+		bool _IsCoinBase;
+		public bool IsCoinBase
+		{
+			get
+			{
+				return Transaction?.IsCoinBase is true || _IsCoinBase;
+			}
+			set
+			{
+				_IsCoinBase = value;
+			}
+		}
 
 		public IEnumerable<MatchedOutput> GetReceivedOutputs()
 		{

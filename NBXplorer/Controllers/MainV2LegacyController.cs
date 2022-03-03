@@ -38,10 +38,10 @@ namespace NBXplorer.Controllers
 		private readonly KeyPathTemplates keyPathTemplates;
 		public DbConnectionFactory ConnectionFactory { get; }
 
-		[HttpGet]
-		[Route("cryptos/{cryptoCode}/derivations/{derivationScheme}/utxos")]
-		[Route("cryptos/{cryptoCode}/addresses/{address}/utxos")]
-		[VersionConstraint(NBXplorerVersion.V2)]
+		//[HttpGet]
+		//[Route("cryptos/{cryptoCode}/derivations/{derivationScheme}/utxos")]
+		//[Route("cryptos/{cryptoCode}/addresses/{address}/utxos")]
+		//[VersionConstraint(NBXplorerVersion.V2)]
 		public async Task<IActionResult> GetUTXOs(
 			string cryptoCode,
 			[ModelBinder(BinderType = typeof(DerivationStrategyModelBinder))]
@@ -146,10 +146,10 @@ namespace NBXplorer.Controllers
 		}
 
 
-		[HttpGet]
-		[Route("cryptos/{cryptoCode}/derivations/{derivationScheme}/balance")]
-		[Route("cryptos/{cryptoCode}/addresses/{address}/balance")]
-		[VersionConstraint(NBXplorerVersion.V2)]
+		//[HttpGet]
+		//[Route("cryptos/{cryptoCode}/derivations/{derivationScheme}/balance")]
+		//[Route("cryptos/{cryptoCode}/addresses/{address}/balance")]
+		//[VersionConstraint(NBXplorerVersion.V2)]
 		public async Task<IActionResult> GetBalance(string cryptoCode,
 		[ModelBinder(BinderType = typeof(DerivationStrategyModelBinder))]
 			DerivationStrategyBase derivationScheme,
