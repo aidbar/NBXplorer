@@ -207,7 +207,7 @@ namespace NBXplorer.Tests
 		public static async Task SpendOutput(this DbConnection db, string tx, string spentTx, int spentIndex)
 		{
 			await CreateTransaction(db, tx);
-			await db.ExecuteAsync("INSERT INTO ins VALUES ('BTC', @tx, @spenttx, @spentidx)", new { tx, spenttx = spentTx, spentidx = spentIndex });
+			await db.ExecuteAsync("INSERT INTO ins VALUES ('BTC', @tx, 0, @spenttx, @spentidx)", new { tx, spenttx = spentTx, spentidx = spentIndex });
 		}
 	}
 }

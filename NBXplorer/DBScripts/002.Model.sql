@@ -137,13 +137,14 @@ CREATE INDEX IF NOT EXISTS outs_code_outpoint_idx ON outs (code, to_outpoint(tx_
 CREATE TABLE IF NOT EXISTS ins (
   code TEXT NOT NULL,
   input_tx_id TEXT NOT NULL,
+  input_idx TEXT NOT NULL,
   spent_tx_id TEXT NOT NULL,
   spent_idx INT NOT NULL,
-  PRIMARY KEY (code, input_tx_id),
+  PRIMARY KEY (code, input_tx_id, input_idx),
   FOREIGN KEY (code, spent_tx_id, spent_idx) REFERENCES outs (code, tx_id, idx) ON DELETE CASCADE,
   FOREIGN KEY (code, input_tx_id) REFERENCES txs (code, tx_id) ON DELETE CASCADE,
   FOREIGN KEY (code, spent_tx_id) REFERENCES txs (code, tx_id) ON DELETE CASCADE);
-CREATE INDEX IF NOT EXISTS ins_code_spentoutpoint_txid_idx ON ins (code, spent_tx_id, spent_idx, input_tx_id);
+CREATE INDEX IF NOT EXISTS ins_code_spentoutpoint_txid_idx ON ins (code, spent_tx_id, spent_idx) INCLUDE (input_tx_id, input_idx);
 
 CREATE TABLE IF NOT EXISTS descriptors (
   code TEXT NOT NULL,

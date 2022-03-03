@@ -148,6 +148,20 @@ namespace NBXplorer
 		{
 			return new TransactionMatchData(this);
 		}
+
+		Dictionary<OutPoint, int> inputsIndexes;
+		public int IndexOfInput(OutPoint spent)
+		{
+			if (Transaction is null)
+				throw new InvalidOperationException("IndexOfInput need access to the underlying transaction");
+			if (inputsIndexes is null)
+			{
+				inputsIndexes = new Dictionary<OutPoint, int>(SpentOutpoints.Count);
+				foreach (var outpoint in SpentOutpoints)
+					inputsIndexes.Add(outpoint, Transaction.Inputs.FindIndex(o => o.PrevOut == outpoint));
+			}
+			return inputsIndexes[spent];
+		}
 	}
 
 	public class TrackedTransactionKey

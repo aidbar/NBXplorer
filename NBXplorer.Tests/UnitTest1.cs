@@ -457,26 +457,14 @@ namespace NBXplorer.Tests
 				Assert.Equal(-(Money.Coins(0.5m) + (substractFee ? Money.Zero : fee)), psbt.PSBT.GetBalance(userDerivationScheme, userExtKey));
 				psbt.PSBT.Finalize();
 				var tx = psbt.PSBT.ExtractTransaction();
-				Logs.Tester.LogInformation("INPUT COUNT: " + tx.Inputs.Count + " " + i);
-				foreach (var iii in tx.Inputs)
-				{
-					Logs.Tester.LogInformation("Spent: " + iii.PrevOut);
-				}
 				Assert.True(tester.Client.Broadcast(tx).Success);
 				tester.Notifications.WaitForTransaction(userDerivationScheme, tx.GetHash());
 				utxos = tester.Client.GetUTXOs(userDerivationScheme);
-				Logs.Tester.LogInformation("UTXO COUNT: " + utxos.GetUnspentCoins().Length);
-				foreach (var ooo in utxos.GetUnspentCoins())
-				{
-					Logs.Tester.LogInformation("Left: " + ooo.Outpoint);
-				}
 				if (i == 0)
 					Assert.Equal(2, utxos.GetUnspentCoins().Length);
 				Assert.Contains(utxos.GetUnspentCoins(), u => u.ScriptPubKey == psbt.ChangeAddress.ScriptPubKey);
 				Assert.Contains(utxos.Unconfirmed.UTXOs, u => u.ScriptPubKey == psbt.ChangeAddress.ScriptPubKey && u.Feature == DerivationFeature.Change);
 			}
-			utxos = tester.Client.GetUTXOs(userDerivationScheme);
-			Assert.Equal(1, utxos.GetUnspentCoins().Length);
 
 			var balance = tester.Client.GetUTXOs(userDerivationScheme).GetUnspentCoins().Select(c => c.Amount).Sum();
 			var psbt2 = tester.Client.CreatePSBT(userDerivationScheme, new CreatePSBTRequest()
@@ -2560,7 +2548,7 @@ namespace NBXplorer.Tests
 		[InlineData(Backend.Postgres)]
 		public void CanTrack5(Backend backend)
 		{
-			using (var tester = ServerTester.Create())
+			using (var tester = ServerTester.Create(backend))
 			{
 				var key = new BitcoinExtKey(new ExtKey(), tester.Network);
 				var pubkey = tester.CreateDerivationStrategy(key.Neuter());
@@ -3353,10 +3341,12 @@ namespace NBXplorer.Tests
 			}
 		}
 
-		[Fact]
-		public void CanScanUTXOSet()
+		[Theory]
+		[InlineData(Backend.Postgres)]
+		[InlineData(Backend.DBTrie)]
+		public void CanScanUTXOSet(Backend backend)
 		{
-			using (var tester = ServerTester.Create())
+			using (var tester = ServerTester.Create(backend))
 			{
 				var key = new BitcoinExtKey(new ExtKey(), tester.Network);
 				var pubkey = tester.CreateDerivationStrategy(key.Neuter());

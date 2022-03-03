@@ -173,7 +173,6 @@ namespace NBXplorer.Controllers
 
 		[HttpPost]
 		[Route("cryptos/{cryptoCode}/derivations/{strategy}/addresses/cancelreservation")]
-		[VersionConstraint(NBXplorerVersion.V1)]
 		public async Task<IActionResult> CancelReservation(string cryptoCode,
 			[ModelBinder(BinderType = typeof(DerivationStrategyModelBinder))]
 			DerivationStrategyBase strategy, [FromBody] KeyPath[] keyPaths)
@@ -199,7 +198,6 @@ namespace NBXplorer.Controllers
 
 		[HttpGet]
 		[Route("cryptos/{cryptoCode}/derivations/{strategy}/scripts/{script}")]
-		[VersionConstraint(NBXplorerVersion.V1)]
 		public async Task<IActionResult> GetKeyInformations(string cryptoCode,
 			[ModelBinder(BinderType = typeof(DerivationStrategyModelBinder))]
 			DerivationStrategyBase strategy,
@@ -517,7 +515,6 @@ namespace NBXplorer.Controllers
 		[HttpPost]
 		[Route("cryptos/{cryptoCode}/derivations/{derivationScheme}")]
 		[Route("cryptos/{cryptoCode}/addresses/{address}")]
-		//[VersionConstraint(NBXplorerVersion.V1)]
 		public async Task<IActionResult> TrackWallet(
 			string cryptoCode,
 			[ModelBinder(BinderType = typeof(DerivationStrategyModelBinder))]
@@ -686,7 +683,6 @@ namespace NBXplorer.Controllers
 
 		[HttpPost]
 		[Route("cryptos/{cryptoCode}/rescan")]
-		[VersionConstraint(NBXplorerVersion.V1)]
 		public async Task<IActionResult> Rescan(string cryptoCode, [FromBody] JObject body)
 		{
 			if (body == null)
@@ -864,7 +860,6 @@ namespace NBXplorer.Controllers
 		[HttpGet]
 		[Route("cryptos/{cryptoCode}/derivations/{derivationScheme}/balance")]
 		[Route("cryptos/{cryptoCode}/addresses/{address}/balance")]
-		//[VersionConstraint(NBXplorerVersion.V1)]
 		public async Task<IActionResult> GetBalance(string cryptoCode,
 			[ModelBinder(BinderType = typeof(DerivationStrategyModelBinder))]
 			DerivationStrategyBase derivationScheme,
@@ -904,7 +899,6 @@ namespace NBXplorer.Controllers
 		[HttpGet]
 		[Route("cryptos/{cryptoCode}/derivations/{derivationScheme}/utxos")]
 		[Route("cryptos/{cryptoCode}/addresses/{address}/utxos")]
-		//[VersionConstraint(NBXplorerVersion.V1)]
 		public async Task<IActionResult> GetUTXOs(
 			string cryptoCode,
 			[ModelBinder(BinderType = typeof(DerivationStrategyModelBinder))]

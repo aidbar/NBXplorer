@@ -49,29 +49,23 @@ namespace NBXplorer
 			return await Connection.ExecuteAsync("INSERT INTO wallets VALUES (@id) ON CONFLICT DO NOTHING", new { id = walletId }) == 1;
 		}
 
-		public async Task SaveTransactions(Transaction[] transactions, uint256 blockId, DateTimeOffset? now)
+		public async Task SaveTransactions(IEnumerable<(Transaction? Transaction, uint256? Id, uint256? BlockId)> transactions, DateTimeOffset? now)
 		{
-			var txs = transactions.Select(tx =>
+			var parameters = transactions.Select(tx =>
 			new {
 				code = Network.CryptoCode,
-				id = tx.GetHash().ToString(),
-				raw = tx.ToBytes(),
+				blk_id = tx.BlockId?.ToString(),
+				id = tx.Id?.ToString() ?? tx.Transaction?.GetHash()?.ToString(),
+				raw = tx.Transaction?.ToBytes(),
 				seen_at = now is null ? default : now.Value,
-			}).ToArray();
+			})
+			.Where(o => o.id is not null)
+			.ToArray();
 			if (now is null)
-				await Connection.ExecuteAsync("INSERT INTO txs VALUES (@code, @id, @raw) ON CONFLICT (code, tx_id) DO UPDATE SET raw = COALESCE(@raw, txs.raw)", txs);
+				await Connection.ExecuteAsync("INSERT INTO txs VALUES (@code, @id, @raw) ON CONFLICT (code, tx_id) DO UPDATE SET raw = COALESCE(@raw, txs.raw)", parameters);
 			else
-				await Connection.ExecuteAsync("INSERT INTO txs VALUES (@code, @id, @raw, NULL, @seen_at) ON CONFLICT (code, tx_id) DO UPDATE SET seen_at=LEAST(@seen_at, txs.seen_at), raw = COALESCE(@raw, txs.raw)", txs);
-			if (blockId is not null)
-			{
-				var txs_blks = transactions.Select(tx =>
-				new {
-					code = Network.CryptoCode,
-					id = tx.GetHash().ToString(),
-					blk_id = blockId.ToString()
-				});
-				await Connection.ExecuteAsync("INSERT INTO txs_blks VALUES (@code, @id, @blk_id) ON CONFLICT DO NOTHING", txs_blks);
-			}
+				await Connection.ExecuteAsync("INSERT INTO txs VALUES (@code, @id, @raw, NULL, @seen_at) ON CONFLICT (code, tx_id) DO UPDATE SET seen_at=LEAST(@seen_at, txs.seen_at), raw = COALESCE(@raw, txs.raw)", parameters);
+			await Connection.ExecuteAsync("INSERT INTO txs_blks VALUES (@code, @id, @blk_id) ON CONFLICT DO NOTHING", parameters.Where(p => p.blk_id is not null).AsList());
 		}
 		public async Task CreateDescriptors(string walletId, Descriptor[] descriptors)
 		{

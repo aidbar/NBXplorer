@@ -409,7 +409,7 @@ namespace NBXplorer
 			if (needTx)
 			{
 				var txRaws = await connection.Connection.QueryAsync<(string tx_id, byte[] raw)>(
-					"SELECT	tx_id, raw FROM txs WHERE code=@code AND tx_id=ANY(@txId);", new { code = Network.CryptoCode, txId = trackedById.Keys.AsList() });
+					"SELECT	tx_id, raw FROM txs WHERE code=@code AND tx_id=ANY(@txId) AND raw IS NOT NULL;", new { code = Network.CryptoCode, txId = trackedById.Keys.AsList() });
 				foreach (var row in txRaws)
 				{
 					trackedById[row.tx_id].Transaction = Transaction.Load(row.raw, Network.NBitcoinNetwork);
@@ -442,6 +442,32 @@ namespace NBXplorer
 				await ImportAddressToRPC(keyInfo.TrackedSource, keyInfo.Address, keyInfo.KeyPath);
 			return keyInfo;
 		}
+
+		public async Task SaveKeyInformations(KeyPathInformation[] keyPathInformations)
+		{
+			await using var connection = await connectionFactory.CreateConnectionHelper(Network);
+
+			var parameters = keyPathInformations
+				.Select(kpi => new
+				{
+					code = Network.CryptoCode,
+					descriptor = ToDescriptor(kpi.TrackedSource, KeyPathTemplates.GetKeyPathTemplate(kpi.Feature)).ToString(),
+					script = kpi.ScriptPubKey.ToHex(),
+					address = kpi.Address.ToString(),
+					idx = kpi.GetIndex(),
+					keypath = kpi.KeyPath.ToString()
+					// TODO REDEEM??
+				})
+				.ToArray();
+			await connection.Connection.ExecuteAsync("INSERT INTO scripts VALUES (@code, @script, @address, 't') ON CONFLICT (code, script) DO UPDATE SET used='t';", parameters);
+			await connection.Connection.ExecuteAsync("INSERT INTO descriptors_scripts VALUES (@code, @descriptor, @idx, @script, @keypath) ON CONFLICT DO NOTHING;", parameters);
+		}
+
+		private LegacyDescriptor ToDescriptor(TrackedSource trackedSource, KeyPathTemplate keyPathTemplate)
+		{
+			return new LegacyDescriptor(((DerivationSchemeTrackedSource)trackedSource).DerivationStrategy, keyPathTemplate);
+		}
+
 		private async Task ImportAddressToRPC(TrackedSource trackedSource, BitcoinAddress address, KeyPath keyPath)
 		{
 			var shouldImportRPC = (await GetMetadata<string>(trackedSource, WellknownMetadataKeys.ImportAddressToRPC)).AsBoolean();
@@ -519,20 +545,15 @@ namespace NBXplorer
 			return id;
 		}
 
-		public Task SaveKeyInformations(KeyPathInformation[] keyPathInformations)
-		{
-			throw new NotImplementedException();
-		}
-
 		public async Task SaveMatches(TrackedTransaction[] transactions)
 		{
 			if (transactions.Length is 0)
 				return;
 			await using var helper = await connectionFactory.CreateConnectionHelper(Network);
 			var connection = helper.Connection;
+			await helper.SaveTransactions(transactions.Select(t => (t.Transaction, t.TransactionHash, t.BlockHash)), null);
 			foreach (var tx in transactions)
 			{
-				await helper.SaveTransactions(new[] { tx.Transaction }, tx.BlockHash, null);
 				var outs = tx.GetReceivedOutputs()
 					.Select(received =>
 					new
@@ -550,13 +571,14 @@ namespace NBXplorer
 					{
 						code = Network.CryptoCode,
 						input_tx_id = tx.TransactionHash.ToString(),
+						input_idx = tx.IndexOfInput(spent),
 						spent_tx_id = spent.Hash.ToString(),
 						spent_idx = (int)spent.N
 					})
 					.ToArray();
 				await connection.ExecuteAsync(
 					"INSERT INTO ins " +
-					"SELECT i.* FROM (VALUES (@code, @input_tx_id, @spent_tx_id, @spent_idx)) i " +
+					"SELECT i.* FROM (VALUES (@code, @input_tx_id, @input_idx, @spent_tx_id, @spent_idx)) i " +
 					"WHERE EXISTS (SELECT FROM outs WHERE code = @code AND tx_id = @spent_tx_id AND idx = @spent_idx) FOR SHARE " +
 					"ON CONFLICT DO NOTHING", ins);
 			}
@@ -586,7 +608,7 @@ namespace NBXplorer
 		public async Task<List<Repository.SavedTransaction>> SaveTransactions(DateTimeOffset now, Transaction[] transactions, uint256 blockHash)
 		{
 			await using var helper = await connectionFactory.CreateConnectionHelper(Network);
-			await helper.SaveTransactions(transactions, blockHash, now);
+			await helper.SaveTransactions(transactions.Select(t => (t, null as uint256, blockHash)), now);
 			return transactions.Select(t => new Repository.SavedTransaction()
 			{
 				BlockHash = blockHash,
@@ -622,9 +644,33 @@ namespace NBXplorer
 			return connectionFactory.CreateConnectionHelper(Network);
 		}
 
-		public Task UpdateAddressPool(DerivationSchemeTrackedSource trackedSource, Dictionary<DerivationFeature, int?> highestKeyIndexFound)
+		public async Task UpdateAddressPool(DerivationSchemeTrackedSource trackedSource, Dictionary<DerivationFeature, int?> highestKeyIndexFound)
 		{
-			throw new NotImplementedException();
+			await using var conn = await GetConnection();
+			
+			var parameters = KeyPathTemplates
+				.GetSupportedDerivationFeatures()
+				.Select(p =>
+				{
+					if (highestKeyIndexFound.TryGetValue(p, out var highest) && highest is int h)
+						return new { DerivationFeature = p, HighestKeyIndexFound = h };
+					return null;
+				})
+				.Where(p => p is not null)
+				.Select(p => new
+				{
+					code = Network.CryptoCode,
+					descriptor = new LegacyDescriptor(trackedSource.DerivationStrategy, KeyPathTemplates.GetKeyPathTemplate(p.DerivationFeature)).ToString(),
+					next_index = p.HighestKeyIndexFound + 1
+				})
+				.ToArray();
+			await conn.Connection.ExecuteAsync("UPDATE descriptors SET next_index=@next_index WHERE code=@code AND descriptor=@descriptor", parameters);
+			await conn.Connection.ExecuteAsync(
+				"WITH cte AS (SELECT code, script FROM descriptors_scripts WHERE code=@code AND descriptor=@descriptor AND idx < @next_index) " +
+				"UPDATE scripts s SET used='t' FROM cte WHERE s.code=cte.code AND s.script=cte.script", parameters);
+
+			foreach (var p in highestKeyIndexFound.Where(k => k.Value is not null))
+				await GenerateAddresses(trackedSource.DerivationStrategy, p.Key);
 		}
 
 		public async Task NewBlock(SlimChainedBlock newTip)
