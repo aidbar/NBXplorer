@@ -38,59 +38,6 @@ namespace NBXplorer.Controllers
 		private readonly KeyPathTemplates keyPathTemplates;
 		public DbConnectionFactory ConnectionFactory { get; }
 
-		[HttpPost]
-		[Route("cryptos/{cryptoCode}/derivations/{derivationScheme}")]
-		[Route("cryptos/{cryptoCode}/addresses/{address}")]
-		[VersionConstraint(NBXplorerVersion.V2)]
-		public async Task<IActionResult> TrackWallet(string cryptoCode,
-			[ModelBinder(BinderType = typeof(DerivationStrategyModelBinder))]
-			DerivationStrategyBase derivationScheme,
-			[ModelBinder(BinderType = typeof(BitcoinAddressModelBinder))]
-			BitcoinAddress address, [FromBody] TrackWalletRequest request = null)
-		{
-			request = request ?? new TrackWalletRequest();
-			TrackedSource trackedSource = GetTrackedSource(derivationScheme, address);
-			if (trackedSource == null)
-				return NotFound();
-
-			var network = GetNetwork(cryptoCode, false);
-			var walletId = trackedSource.GetLegacyWalletId(network);
-			await using var conn = await ConnectionFactory.CreateConnectionHelper(network);
-			await conn.CreateWallet(walletId);
-			if (trackedSource is DerivationSchemeTrackedSource dts)
-			{
-				var descriptors = keyPathTemplates.GetSupportedDerivationFeatures()
-					.Select(f => new LegacyDescriptor(dts.DerivationStrategy, keyPathTemplates.GetKeyPathTemplate(f)))
-					.ToArray();
-				await conn.CreateDescriptors(walletId, descriptors);
-				if (request.Wait)
-				{
-					foreach (var o in descriptors.Zip(keyPathTemplates.GetSupportedDerivationFeatures()))
-					{
-						await conn.GenerateAddresses(o.First, GenerateAddressQuery(request, o.Second));
-					}
-				}
-				else
-				{
-					foreach (var desc in descriptors)
-					{
-						await conn.GenerateAddresses(desc, new GenerateAddressQuery(minAddresses: 3, null));
-					}
-					foreach (var o in descriptors.Zip(keyPathTemplates.GetSupportedDerivationFeatures()))
-					{
-						_ = GenerateAdresses(request, o.First, o.Second, network);
-					}
-				}
-			}
-			return Ok();
-		}
-
-		private async Task<int> GenerateAdresses(TrackWalletRequest request, LegacyDescriptor descriptor, DerivationFeature feature, NBXplorerNetwork network)
-		{
-			await using var conn = await ConnectionFactory.CreateConnectionHelper(network);
-			return await conn.GenerateAddresses(descriptor, GenerateAddressQuery(request, feature));
-		}
-
 		[HttpGet]
 		[Route("cryptos/{cryptoCode}/derivations/{derivationScheme}/utxos")]
 		[Route("cryptos/{cryptoCode}/addresses/{address}/utxos")]
@@ -109,55 +56,52 @@ namespace NBXplorer.Controllers
 			var network = GetNetwork(cryptoCode, false);
 			await using var conn = await ConnectionFactory.CreateConnectionHelper(network);
 			changes.CurrentHeight = (await conn.GetTip()).Height;
-			foreach (var row in await conn.Connection.QueryAsync<(string tx_id, int idx, long value, string script, string keypath, long height)>
-				("SELECT u.code, tx_id, u.idx, value, script, keypath, height FROM get_wallet_conf_utxos(@code, @walletId) u " +
-				"INNER JOIN tracked_scripts ts USING (code, script) " +
-				"WHERE u.code=@code AND ts.wallet_id=@walletId", new { code = network.CryptoCode, walletId = trackedSource.GetLegacyWalletId(network) }))
+			changes.DerivationStrategy = derivationScheme;
+			changes.TrackedSource = trackedSource;
+			var walletId = trackedSource.GetLegacyWalletId(network);
+			changes.Confirmed.UTXOs = await conn.GetWalletUTXOWithDescriptors(network, walletId, changes.CurrentHeight);
+			Dictionary<OutPoint, UTXO> outputsByOutpoint = new Dictionary<OutPoint, UTXO>((int)(changes.Confirmed.UTXOs.Count * 1.1));
+			foreach (var utxo in changes.Confirmed.UTXOs)
 			{
-				var txid = uint256.Parse(row.tx_id);
-				var keypath = KeyPath.Parse(row.keypath);
-				changes.Confirmed.UTXOs.Add(new UTXO()
-				{
-					Confirmations = (int)(changes.CurrentHeight - row.height + 1),
-					Index = row.idx,
-					Outpoint = new OutPoint(txid, row.idx),
-					KeyPath = keypath,
-					ScriptPubKey = Script.FromHex(row.script),
-					// TODO: Timestamp = new DateTimeOffset(row.created_at),
-					TransactionHash = txid,
-					Value = Money.Satoshis(row.value),
-					Feature = keyPathTemplates.GetDerivationFeature(keypath)
-				});
+				outputsByOutpoint.Add(utxo.Outpoint, utxo);
 			}
 
-			var spentOutpoints = (await conn.Connection.QueryAsync<string>(
-				"SELECT to_outpoint(i.spent_tx_id, i.spent_idx) FROM ins i " +
-				"JOIN txs t ON i.code=t.code AND i.input_tx_id=t.tx_id " +
-				"WHERE t.code=@code AND t.mempool='t' "))
-				.Select(o => OutPoint.Parse(o)).ToArray();
-			//"SELECT * froms "
-
-			//var chain = ChainProvider.GetChain(network);
-			var repo = RepositoryProvider.GetRepository(network);
-
-			//changes = new UTXOChanges();
-			//changes.CurrentHeight = chain.Height;
-			//var transactions = await GetAnnotatedTransactions(repo, chain, trackedSource);
-
-			//changes.Confirmed = ToUTXOChange(transactions.ConfirmedState);
-			//changes.Confirmed.SpentOutpoints.Clear();
-			//changes.Unconfirmed = ToUTXOChange(transactions.UnconfirmedState - transactions.ConfirmedState);
-
-
-
-			//FillUTXOsInformation(changes.Confirmed.UTXOs, transactions, changes.CurrentHeight);
-			//FillUTXOsInformation(changes.Unconfirmed.UTXOs, transactions, changes.CurrentHeight);
-
-			//changes.TrackedSource = trackedSource;
-			//changes.DerivationStrategy = (trackedSource as DerivationSchemeTrackedSource)?.DerivationStrategy;
-			//changes.Confirmed.
-			//return Json(changes, repo.Serializer.Settings);
-			return Json(changes, repo.Serializer.Settings);
+			var spentOutpoints = await conn.Connection.QueryAsync<(string wallet_id, string out_tx_id, int idx, string source, long value, string script, string keypath, DateTime seen_at)>(
+				"SELECT ts.wallet_id, io.out_tx_id, io.idx, io.source, io.value, io.script, ts.keypath, io.seen_at FROM unconf_ins_outs io " +
+				"LEFT JOIN tracked_scripts ts USING (code, script) " +
+				"WHERE code=@code AND wallet_id=@walletId " +
+				"ORDER BY io.seen_at", new { code = network.CryptoCode, walletId = walletId });
+			foreach (var row in spentOutpoints)
+			{
+				var outpoint = new OutPoint(uint256.Parse(row.out_tx_id), row.idx);
+				var keypath = row.keypath is null ? null : KeyPath.Parse(row.keypath);
+				if (row.source == "INPUT")
+				{
+					if (!outputsByOutpoint.Remove(outpoint))
+						// Conflict, must be double spend
+						continue;
+					if (changes.Unconfirmed.UTXOs.RemoveAll(u => u.Outpoint == outpoint) == 0)
+						changes.Unconfirmed.SpentOutpoints.Add(outpoint);
+				}
+				else
+				{
+					var utxo = new UTXO()
+					{
+						Confirmations = 0,
+						Index = row.idx,
+						Outpoint = outpoint,
+						KeyPath = keypath,
+						ScriptPubKey = Script.FromHex(row.script),
+						Timestamp = new DateTimeOffset(row.seen_at),
+						TransactionHash = outpoint.Hash,
+						Value = Money.Satoshis(row.value),
+						Feature = keypath is null ? null : keyPathTemplates.GetDerivationFeature(keypath)
+					};
+					outputsByOutpoint.Add(utxo.Outpoint, utxo);
+					changes.Unconfirmed.UTXOs.Add(utxo);
+				}
+			}
+			return Json(changes, network.Serializer.Settings);
 		}
 
 		private GenerateAddressQuery GenerateAddressQuery(TrackWalletRequest request, DerivationFeature feature)
@@ -199,6 +143,40 @@ namespace NBXplorer.Controllers
 					throw new NBXplorerError(400, "rpc-unavailable", $"The RPC interface is currently not available.").AsException();
 			}
 			return network;
+		}
+
+
+		[HttpGet]
+		[Route("cryptos/{cryptoCode}/derivations/{derivationScheme}/balance")]
+		[Route("cryptos/{cryptoCode}/addresses/{address}/balance")]
+		[VersionConstraint(NBXplorerVersion.V2)]
+		public async Task<IActionResult> GetBalance(string cryptoCode,
+		[ModelBinder(BinderType = typeof(DerivationStrategyModelBinder))]
+			DerivationStrategyBase derivationScheme,
+		[ModelBinder(BinderType = typeof(BitcoinAddressModelBinder))]
+			BitcoinAddress address)
+		{
+			var trackedSource = GetTrackedSource(derivationScheme, address);
+			UTXOChanges changes = new UTXOChanges();
+			if (trackedSource == null)
+				throw new ArgumentNullException(nameof(trackedSource));
+			var network = GetNetwork(cryptoCode, false);
+
+			var walletId = trackedSource.GetLegacyWalletId(network);
+			await using var conn = await ConnectionFactory.CreateConnectionHelper(network);
+
+			var balance = new GetBalanceResponse();
+			var b = await conn.Connection.QueryFirstAsync<(long conf_balance, long immature_balance)>(
+				"SELECT COALESCE(SUM(value), 0) conf_balance," +
+				"       COALESCE(SUM (value) FILTER (WHERE immature='t'), 0) immature_balance " +
+				"FROM get_wallet_conf_utxos(@code, @walletId)", new { code = network.CryptoCode, walletId });
+
+			balance.Confirmed = Money.Satoshis(b.conf_balance);
+			balance.Unconfirmed = Money.Zero;
+			balance.Immature = Money.Satoshis(b.immature_balance);
+			balance.Total = balance.Confirmed.Add(balance.Unconfirmed);
+			balance.Available = balance.Total.Sub(balance.Immature);
+			return Json(balance);
 		}
 	}
 }

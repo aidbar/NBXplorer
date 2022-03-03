@@ -35,9 +35,14 @@ namespace NBXplorer.Tests
 			await conn.AssertEmptyWallet("Alice");
 
 			await conn.ConfirmTx("b1", "t1");
+			Assert.Equal("b1", conn.ExecuteScalar<string>("SELECT blk_id FROM txs WHERE tx_id='t1'"));
 
 			var utxo = Assert.Single(await conn.GetUTXOs("Alice"));
 
+			await conn.Orphan("b1");
+			Assert.Null(conn.ExecuteScalar<string>("SELECT blk_id FROM txs WHERE tx_id='t1'"));
+			await conn.ExecuteAsync("UPDATE blks SET confirmed='t'");
+			Assert.Equal("b1", conn.ExecuteScalar<string>("SELECT blk_id FROM txs WHERE tx_id='t1'"));
 			await conn.Orphan("b1");
 			await conn.AssertEmptyWallet("Alice");
 			await conn.ConfirmTx("b2", "t1");
@@ -128,8 +133,7 @@ namespace NBXplorer.Tests
 
 		private async Task<DbConnection> GetConnection(string dbName = null)
 		{
-			dbName ??= $"dbtest{RandomUtils.GetUInt32()}";
-			var connectionString = $"User ID=postgres;Host=localhost;Include Error Detail=true;Port=39383;Database={dbName}";
+			var connectionString = ServerTester.GetTestPostgres(dbName);
 			var conf = new ConfigurationBuilder().AddInMemoryCollection(new[] { new KeyValuePair<string, string>("POSTGRES", connectionString) }).Build();
 			var container = new ServiceCollection();
 			container.AddSingleton<IConfiguration>(conf);
@@ -156,10 +160,10 @@ namespace NBXplorer.Tests
 			Assert.Equal(0, await db.ExecuteScalarAsync<long>("SELECT COUNT(*) FROM get_wallet_conf_utxos('BTC', @wid)", new { wid = walletId }));
 		}
 
-		public record UTXORow(System.String tx_id, System.Int32 idx, string script, long value);
+		public record UTXORow(System.String code, System.String tx_id, System.Int32 idx, System.String script, System.Int64 value, System.String blk_id, System.Int64 height);
 		public static async Task<UTXORow[]> GetUTXOs(this DbConnection db, string walletId)
 		{
-			return (await db.QueryAsync<UTXORow>("SELECT * FROM get_wallet_conf_utxos('BTC', @wid)", new { wid = walletId })).ToArray();
+			return (await db.QueryAsync<UTXORow>("SELECT code, tx_id, idx, script, value, blk_id, height FROM get_wallet_conf_utxos('BTC', @wid)", new { wid = walletId })).ToArray();
 		}
 		public static async Task ConfirmTx(this DbConnection db, string block, string tx)
 		{
@@ -191,7 +195,7 @@ namespace NBXplorer.Tests
 
 		static async Task CreateTransaction(this DbConnection db, string tx)
 		{
-			await db.ExecuteAsync("INSERT INTO txs VALUES ('BTC', @tx, '', 'f') ON CONFLICT DO NOTHING", new { tx });
+			await db.ExecuteAsync("INSERT INTO txs VALUES ('BTC', @tx, '') ON CONFLICT DO NOTHING", new { tx });
 		}
 
 		public static async Task AddOutput(this DbConnection db, string tx, int index, string scriptpubkey, int val)

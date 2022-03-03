@@ -140,7 +140,6 @@ namespace NBXplorer.Controllers
 
 		[HttpGet]
 		[Route("cryptos/{cryptoCode}/derivations/{strategy}/addresses/unused")]
-		[VersionConstraint(NBXplorerVersion.V1)]
 		public async Task<IActionResult> GetUnusedAddress(
 			string cryptoCode,
 			[ModelBinder(BinderType = typeof(DerivationStrategyModelBinder))]
@@ -187,7 +186,6 @@ namespace NBXplorer.Controllers
 
 		[HttpGet]
 		[Route("cryptos/{cryptoCode}/scripts/{script}")]
-		[VersionConstraint(NBXplorerVersion.V1)]
 		public async Task<IActionResult> GetKeyInformations(string cryptoCode,
 			[ModelBinder(BinderType = typeof(ScriptModelBinder))] Script script)
 		{
@@ -519,7 +517,7 @@ namespace NBXplorer.Controllers
 		[HttpPost]
 		[Route("cryptos/{cryptoCode}/derivations/{derivationScheme}")]
 		[Route("cryptos/{cryptoCode}/addresses/{address}")]
-		[VersionConstraint(NBXplorerVersion.V1)]
+		//[VersionConstraint(NBXplorerVersion.V1)]
 		public async Task<IActionResult> TrackWallet(
 			string cryptoCode,
 			[ModelBinder(BinderType = typeof(DerivationStrategyModelBinder))]
@@ -587,7 +585,6 @@ namespace NBXplorer.Controllers
 		[HttpGet]
 		[Route("cryptos/{cryptoCode}/derivations/{derivationScheme}/transactions/{txId?}")]
 		[Route("cryptos/{cryptoCode}/addresses/{address}/transactions/{txId?}")]
-		[VersionConstraint(NBXplorerVersion.V1)]
 		public async Task<IActionResult> GetTransactions(
 			string cryptoCode,
 			[ModelBinder(BinderType = typeof(DerivationStrategyModelBinder))]
@@ -1101,7 +1098,6 @@ namespace NBXplorer.Controllers
 
 		[HttpPost]
 		[Route("cryptos/{cryptoCode}/derivations")]
-		[VersionConstraint(NBXplorerVersion.V1)]
 		public async Task<IActionResult> GenerateWallet(string cryptoCode, [FromBody] GenerateWalletRequest request)
 		{
 			if (request == null)

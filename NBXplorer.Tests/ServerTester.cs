@@ -30,18 +30,18 @@ namespace NBXplorer.Tests
 	{
 		private readonly string _Directory;
 
-		public static ServerTester Create(int version, [CallerMemberNameAttribute] string caller = null)
+		public static ServerTester Create(Backend backend, [CallerMemberNameAttribute] string caller = null)
 		{
-			return new ServerTester(version, caller);
+			return new ServerTester(backend, caller);
 		}
 
 		public static ServerTester Create([CallerMemberNameAttribute]string caller = null)
 		{
-			return Create(1, caller);
+			return Create(Backend.DBTrie, caller);
 		}
 		public static ServerTester CreateNoAutoStart([CallerMemberNameAttribute]string caller = null)
 		{
-			return new ServerTester(1, caller, false);
+			return new ServerTester(Backend.DBTrie, caller, false);
 		}
 
 		public void Dispose()
@@ -66,9 +66,9 @@ namespace NBXplorer.Tests
 		}
 
 		public string Caller { get; }
-		public ServerTester(int version, string directory, bool autoStart = true)
+		public ServerTester(Backend backend, string directory, bool autoStart = true)
 		{
-			Version = version;
+			Backend = backend;
 			SetEnvironment();
 			Caller = directory;
 			var rootTestData = "TestData";
@@ -138,10 +138,9 @@ namespace NBXplorer.Tests
 			var port = CustomServer.FreeTcpPort();
 			List<(string key, string value)> keyValues = new List<(string key, string value)>();
 			keyValues.Add(("conf", Path.Combine(datadir, "settings.config")));
-			if (Version == 2)
+			if (Backend == Backend.Postgres)
 			{
-				var dbName = $"dbtest{RandomUtils.GetUInt32()}";
-				var connectionString = $"User ID=postgres;Host=localhost;Include Error Detail=true;Port=39383;Database={dbName}";
+				string connectionString = GetTestPostgres();
 				keyValues.Add(("postgres", connectionString));
 			}
 			keyValues.Add(("datadir", datadir));
@@ -201,6 +200,13 @@ namespace NBXplorer.Tests
 			HttpClient.BaseAddress = Address;
 			_Client.SetCookieAuth(Path.Combine(conf.DataDir, ".cookie"));
 			Notifications = _Client.CreateLongPollingNotificationSession();
+		}
+
+		public static string GetTestPostgres(string dbName = null)
+		{
+			dbName ??= $"dbtest{RandomUtils.GetUInt32()}";
+			var connectionString = $"User ID=postgres;Host=localhost;Include Error Detail=true;Port=39383;Database={dbName}";
+			return connectionString;
 		}
 
 		public HttpClient HttpClient { get; internal set; }
@@ -408,7 +414,7 @@ namespace NBXplorer.Tests
 		} = true;
 		public bool KeepPreviousData { get; set; }
 		public bool LoadedData { get; private set; }
-		public int Version { get; set; }
+		public Backend Backend { get; set; }
 
 		public uint256 SendToAddress(BitcoinAddress address, Money amount)
 		{

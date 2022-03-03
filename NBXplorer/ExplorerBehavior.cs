@@ -179,15 +179,16 @@ namespace NBXplorer
 		retry:
 			try
 			{
+				var slimBlockHeader = Chain.GetBlock(blockHash);
+				if (slimBlockHeader != null)
+					await Repository.NewBlock(slimBlockHeader);
 				DateTimeOffset now = DateTimeOffset.UtcNow;
 				var matches =
 					(await Repository.GetMatches(block.Transactions, blockHash, now, true))
 					.ToArray();
 				await SaveMatches(matches, blockHash, now, true);
-				var slimBlockHeader = Chain.GetBlock(blockHash);
 				if (slimBlockHeader != null)
 				{
-					await Repository.NewBlock(slimBlockHeader);
 					var blockEvent = new Models.NewBlockEvent()
 					{
 						CryptoCode = _Repository.Network.CryptoCode,

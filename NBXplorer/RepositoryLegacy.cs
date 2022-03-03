@@ -11,6 +11,8 @@ using System.Threading;
 using System.Threading.Tasks;
 using NBitcoin.DataEncoders;
 using System.Data.Common;
+using NBXplorer.Logging;
+using Microsoft.Extensions.Logging;
 
 namespace NBXplorer
 {
@@ -73,6 +75,7 @@ namespace NBXplorer
 	public class RepositoryLegacy : IRepository
 	{
 		private DbConnectionFactory connectionFactory;
+		public DbConnectionFactory ConnectionFactory => connectionFactory;
 		public RepositoryLegacy(DbConnectionFactory connectionFactory, NBXplorerNetwork network, KeyPathTemplates keyPathTemplates)
 		{
 			this.connectionFactory = connectionFactory;
@@ -118,7 +121,6 @@ namespace NBXplorer
 		public async Task<int> GenerateAddresses(DerivationStrategyBase strategy, DerivationFeature derivationFeature, GenerateAddressQuery query = null)
 		{
 			await using var connection = await connectionFactory.CreateConnectionHelper(Network);
-			var wid = new DerivationSchemeTrackedSource(strategy).GetLegacyWalletId(Network);
 			return await connection.GenerateAddresses(new LegacyDescriptor(strategy, KeyPathTemplates.GetKeyPathTemplate(derivationFeature)), query);
 		}
 
@@ -131,21 +133,37 @@ namespace NBXplorer
 		{
 			await using var connection = await connectionFactory.CreateConnection();
 			var limitClause = string.Empty;
-			if (limit is int i)
+			if (limit is int i && i > 0)
 				limitClause = $" LIMIT {i}";
-			var res = (await connection.QueryAsync<(long id, string data)>($"SELECT id, data FROM evts WHERE code=@code{limitClause}", new { code = Network.CryptoCode }))
-				.Select(r =>
-				{
-					var ev = NewEventBase.ParseEvent(r.data, Serializer.Settings);
-					ev.EventId = r.id;
-					return ev;
-				})
+			var res = (await connection.QueryAsync<(long id, string data)>($"SELECT id, data FROM evts WHERE code=@code AND id > @lastEventId ORDER BY id{limitClause}", new { code = Network.CryptoCode, lastEventId }))
+				.Select(ToTypedEvent)
 				.ToArray();
+			return res;
+		}
+
+		private NewEventBase ToTypedEvent((long id, string data) r)
+		{
+			var ev = NewEventBase.ParseEvent(r.data, Serializer.Settings);
+			ev.EventId = r.id;
+			return ev;
+		}
+
+		public async Task<IList<NewEventBase>> GetLatestEvents(int limit = 10)
+		{
+			await using var connection = await connectionFactory.CreateConnection();
+			var limitClause = string.Empty;
+			if (limit is int i && i > 0)
+				limitClause = $" LIMIT {i}";
+			var res = (await connection.QueryAsync<(long id, string data)>($"SELECT id, data FROM evts WHERE code=@code ORDER BY id DESC{limitClause}", new { code = Network.CryptoCode }))
+				.Select(ToTypedEvent)
+				.ToArray();
+			Array.Reverse(res);
 			return res;
 		}
 
 		public async Task<BlockLocator> GetIndexProgress()
 		{
+			// TODO: WE SHOULD NOT RELY ON THE BLKS TABLE FOR STORING THE INDEX PROGRESS
 			await using var connection = await connectionFactory.CreateConnection();
 			var blocks = (await connection.QueryAsync<string>("SELECT blk_id FROM blks WHERE code=@code AND confirmed='t' ORDER BY height DESC LIMIT 1000;", new { code = Network.CryptoCode }))
 				.Select(b => uint256.Parse(b))
@@ -165,15 +183,17 @@ namespace NBXplorer
 		async Task<MultiValueDictionary<Script, KeyPathInformation>> GetKeyInformations(DbConnection connection, IList<Script> scripts)
 		{
 			MultiValueDictionary<Script, KeyPathInformation> result = new MultiValueDictionary<Script, KeyPathInformation>();
+			foreach (var s in scripts)
+				result.AddRange(s, Array.Empty<KeyPathInformation>());
 			foreach (var row in await connection.QueryAsync<(string script, string addr, string source, string descriptor, string keypath)>(
 				"SELECT script, addr, source, descriptor, keypath FROM tracked_scripts WHERE code=@code AND script=ANY(@scripts)", new { code = Network.CryptoCode, scripts = scripts.Select(s => s.ToHex()).ToList() }))
 			{
-				
+
 				bool isDescriptor = row.source == "DESCRIPTOR";
 				bool isExplicit = row.source == "EXPLICIT";
 				var descriptor = isDescriptor ? Descriptor.Parse(row.descriptor, Network) : null;
 				var script = Script.FromHex(row.script);
-				var derivationStrategy = (descriptor as LegacyDescriptor).DerivationStrategy;
+				var derivationStrategy = (descriptor as LegacyDescriptor)?.DerivationStrategy;
 				var addr = BitcoinAddress.Create(row.addr, Network.NBitcoinNetwork);
 				var keypath = isDescriptor ? KeyPath.Parse(row.keypath) : null;
 				result.Add(script, new KeyPathInformation()
@@ -184,23 +204,18 @@ namespace NBXplorer
 					ScriptPubKey = script,
 					TrackedSource = isDescriptor && derivationStrategy is not null ? new DerivationSchemeTrackedSource(derivationStrategy) :
 									isExplicit ? new AddressTrackedSource(addr) : null,
-					Feature = KeyPathTemplates.GetDerivationFeature(keypath),
+					Feature = keypath is null ? DerivationFeature.Deposit : KeyPathTemplates.GetDerivationFeature(keypath),
 					// TODO: Redeem = 
 				});
 			}
 			return result;
 		}
 
-		public Task<IList<NewEventBase>> GetLatestEvents(int limit = 10)
-		{
-			throw new NotImplementedException();
-		}
-
 		FixedSizeCache<uint256, uint256> noMatchCache = new FixedSizeCache<uint256, uint256>(5000, k => k);
 
 		record ScriptPubKeyQuery(string code, string id);
 
-		
+
 
 		public async Task<TrackedTransaction[]> GetMatches(IList<Transaction> txs, uint256 blockId, DateTimeOffset now, bool useCache)
 		{
@@ -344,26 +359,80 @@ namespace NBXplorer
 			throw new NotImplementedException();
 		}
 
-		
+
 		public async Task<Dictionary<OutPoint, TxOut>> GetOutPointToTxOut(IList<OutPoint> outPoints)
 		{
 			await using var connection = await connectionFactory.CreateConnectionHelper(Network);
 			return await connection.GetUTXOs(outPoints);
 		}
 
-		public Task<Repository.SavedTransaction[]> GetSavedTransactions(uint256 txid)
+		record SavedTransactionRow(byte[] raw, string blk_id, DateTime seen_at);
+		public async Task<Repository.SavedTransaction[]> GetSavedTransactions(uint256 txid)
 		{
-			throw new NotImplementedException();
+			await using var connection = await connectionFactory.CreateConnectionHelper(Network);
+			var tx = await connection.Connection.QueryFirstOrDefaultAsync<SavedTransactionRow>("SELECT raw, blk_id, seen_at FROM txs WHERE code=@code AND tx_id=@tx_id", new { code = Network.CryptoCode, tx_id = txid.ToString() });
+			if (tx?.raw is null)
+				return Array.Empty<Repository.SavedTransaction>();
+			return new[] { new Repository.SavedTransaction()
+			{
+				BlockHash = tx.blk_id is null ? null : uint256.Parse(tx.blk_id),
+				Timestamp = new DateTimeOffset(tx.seen_at),
+				Transaction = Transaction.Load(tx.raw, Network.NBitcoinNetwork)
+			}};
 		}
 
-		public Task<TrackedTransaction[]> GetTransactions(TrackedSource trackedSource, uint256 txId = null, CancellationToken cancellation = default)
+		public async Task<TrackedTransaction[]> GetTransactions(TrackedSource trackedSource, uint256 txId = null, CancellationToken cancellation = default)
 		{
-			throw new NotImplementedException();
+			await using var connection = await connectionFactory.CreateConnectionHelper(Network);
+			var tip = await connection.GetTip();
+			if (tip is null)
+				return Array.Empty<TrackedTransaction>();
+			var utxos = await 
+				connection.Connection.QueryAsync<(string tx_id, byte[] raw, string block_id, int idx, string script, long value, DateTime seen_at)>(
+				"SELECT t.tx_id, t.raw, t.blk_id, o.idx, o.script, o.value, t.seen_at " +
+				"FROM tracked_scripts ts " +
+				"JOIN outs o USING (code, script) " +
+				"JOIN txs t ON t.code = o.code AND t.tx_id = o.tx_id " +
+				"WHERE ts.code=@code AND ts.wallet_id=@walletId", new { code = Network.CryptoCode, walletId = trackedSource.GetLegacyWalletId(Network) });
+			utxos.TryGetNonEnumeratedCount(out int c);
+			var trackedById = new Dictionary<string, TrackedTransaction>(c);
+			foreach (var utxo in utxos)
+			{
+				var tracked = GetTrackedTransaction(trackedSource, utxo.tx_id, utxo.raw, utxo.block_id, trackedById);
+				var txout = Network.NBitcoinNetwork.Consensus.ConsensusFactory.CreateTxOut();
+				txout.Value = Money.Satoshis(utxo.value);
+				txout.ScriptPubKey = Script.FromHex(utxo.script);
+				tracked.ReceivedCoins.Add(new Coin(new OutPoint(tracked.Key.TxId, utxo.idx), txout));
+			}
+			return trackedById.Values.ToArray();
 		}
 
-		public Task<KeyPathInformation> GetUnused(DerivationStrategyBase strategy, DerivationFeature derivationFeature, int n, bool reserve)
+		private TrackedTransaction GetTrackedTransaction(TrackedSource trackedSource, string tx_id, byte[] raw, string block_id, Dictionary<string, TrackedTransaction> trackedById)
 		{
-			throw new NotImplementedException();
+			if (trackedById.TryGetValue(tx_id, out var tracked))
+				return tracked;
+			TrackedTransactionKey key;
+			bool hasTx = raw is not null;
+			if (block_id is not null)
+			{
+				key = new TrackedTransactionKey(uint256.Parse(tx_id), uint256.Parse(block_id), !hasTx);
+			}
+			else
+			{
+				key = new TrackedTransactionKey(uint256.Parse(tx_id), null, !hasTx);
+			}
+			if (hasTx)
+				tracked = CreateTrackedTransaction(trackedSource, key, Transaction.Load(raw, Network.NBitcoinNetwork), new Dictionary<Script, KeyPath>());
+			else
+				tracked = CreateTrackedTransaction(trackedSource, key, null as IEnumerable<Coin>, new Dictionary<Script, KeyPath>());
+			trackedById.Add(tx_id, tracked);
+			return tracked;
+		}
+
+		public async Task<KeyPathInformation> GetUnused(DerivationStrategyBase strategy, DerivationFeature derivationFeature, int n, bool reserve)
+		{
+			await using var connection = await connectionFactory.CreateConnectionHelper(Network);
+			return await connection.GetUnused(new LegacyDescriptor(strategy, KeyPathTemplates.GetKeyPathTemplate(derivationFeature)), n, reserve);
 		}
 
 		public ValueTask<bool> MigrateOutPoints(string directory, CancellationToken cancellationToken = default)
@@ -410,14 +479,16 @@ namespace NBXplorer
 				await helper.SaveTransactions(new[] { tx.Transaction }, tx.BlockHash, null);
 				var outs = tx.GetReceivedOutputs()
 					.Select(received =>
-					new {
+					new
+					{
 						code = Network.CryptoCode,
 						tx_id = tx.TransactionHash.ToString(),
 						idx = received.Index,
 						scriptpubkey = received.ScriptPubKey.ToHex(),
-						val = ((Money)received.Value).Satoshi
+						val = ((Money)received.Value).Satoshi,
+						immature = tx.IsCoinBase
 					}).ToArray();
-				await connection.ExecuteAsync("INSERT INTO outs VALUES (@code, @tx_id, @idx, @scriptpubkey, @val) ON CONFLICT DO NOTHING", outs);
+				await connection.ExecuteAsync("INSERT INTO outs VALUES (@code, @tx_id, @idx, @scriptpubkey, @val, @immature) ON CONFLICT DO NOTHING", outs);
 				var ins = tx.SpentOutpoints
 					.Select(spent => new
 					{
@@ -454,12 +525,19 @@ namespace NBXplorer
 
 		public Task SetIndexProgress(BlockLocator locator)
 		{
-			throw new NotImplementedException();
+			// TODO: WE SHOULD NOT RELY ON THE BLKS TABLE FOR STORING THE INDEX PROGRESS
+			return Task.CompletedTask;
 		}
 
-		public Task Track(IDestination address)
+		public async Task Track(IDestination address)
 		{
-			throw new NotImplementedException();
+			await using var conn = await GetConnection();
+			var walletId = ((AddressTrackedSource)address).GetLegacyWalletId(Network);
+			await conn.Connection.ExecuteAsync(
+				"INSERT INTO wallets VALUES (@walletId) ON CONFLICT DO NOTHING;" +
+				"INSERT INTO scripts VALUES (@code, @script, @addr) ON CONFLICT DO NOTHING;" +
+				"INSERT INTO scripts_wallets VALUES (@code, @script, @walletId) ON CONFLICT DO NOTHING"
+				, new { code = Network.CryptoCode, script = address.ScriptPubKey.ToHex(), addr = address.ScriptPubKey.GetDestinationAddress(Network.NBitcoinNetwork).ToString(), walletId });
 		}
 
 		public ValueTask<int> TrimmingEvents(int maxEvents, CancellationToken cancellationToken = default)
@@ -483,7 +561,17 @@ namespace NBXplorer
 			var tip = await conn.GetTip();
 			if (tip is not null && newTip.Previous != tip.Hash)
 				await conn.Connection.ExecuteScalarAsync<int>("UPDATE blks SET confirmed='f' WHERE height >= @newtipheight", new { newtipheight = newTip.Height });
-			await conn.Connection.ExecuteAsync("INSERT INTO blks VALUES (@code, @id, @height, @prev)", new { code = Network.CryptoCode, id = newTip.Hash.ToString(), prev = newTip.Previous.ToString(), height = newTip.Height });
+			var parameters = new
+			{
+				code = Network.CryptoCode,
+				id = newTip.Hash.ToString(),
+				prev = newTip.Previous.ToString(),
+				height = newTip.Height,
+				maturity = newTip.Height - Network.NBitcoinNetwork.Consensus.CoinbaseMaturity + 1
+			};
+			await conn.Connection.ExecuteAsync(
+				"INSERT INTO blks VALUES (@code, @id, @height, @prev) ON CONFLICT (code, blk_id) DO UPDATE SET confirmed='t';" +
+				"SELECT set_maturity_below_height(@code, @maturity);", parameters);
 		}
 	}
 }
