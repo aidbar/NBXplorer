@@ -68,6 +68,7 @@ namespace NBXplorer.Tests
 		public string Caller { get; }
 		public ServerTester(Backend backend, string directory, bool autoStart = true)
 		{
+			_Name = directory;
 			Backend = backend;
 			SetEnvironment();
 			Caller = directory;
@@ -140,7 +141,7 @@ namespace NBXplorer.Tests
 			keyValues.Add(("conf", Path.Combine(datadir, "settings.config")));
 			if (Backend == Backend.Postgres)
 			{
-				string connectionString = GetTestPostgres();
+				string connectionString = GetTestPostgres(null, _Name);
 				keyValues.Add(("postgres", connectionString));
 			}
 			keyValues.Add(("datadir", datadir));
@@ -202,18 +203,21 @@ namespace NBXplorer.Tests
 			Notifications = _Client.CreateLongPollingNotificationSession();
 		}
 
-		public static string GetTestPostgres(string dbName = null)
+		public static string GetTestPostgres(string dbName, string applicationName)
 		{
+			if (dbName is null)
+				dbName = applicationName + "_" + RandomUtils.GetUInt32();
 			var connectionString = Environment.GetEnvironmentVariable("TESTS_POSTGRES");
-			dbName ??= $"dbtest{RandomUtils.GetUInt32()}";
+			dbName = dbName.ToLowerInvariant();
 			if (string.IsNullOrEmpty(connectionString))
 			{
-				connectionString = $"User ID=postgres;Host=localhost;Include Error Detail=true;Port=39383;Database={dbName}";
+				connectionString = $"User ID=postgres;Host=localhost;Include Error Detail=true;Application Name={applicationName};Port=39383;Database={dbName}";
 			}
 			else
 			{
 				Npgsql.NpgsqlConnectionStringBuilder builder = new Npgsql.NpgsqlConnectionStringBuilder(connectionString);
 				builder.Database = dbName;
+				builder.ApplicationName = applicationName;
 				connectionString = builder.ToString();
 			}
 			return connectionString;
@@ -424,6 +428,9 @@ namespace NBXplorer.Tests
 		} = true;
 		public bool KeepPreviousData { get; set; }
 		public bool LoadedData { get; private set; }
+
+		private readonly string _Name;
+
 		public Backend Backend { get; set; }
 
 		public uint256 SendToAddress(BitcoinAddress address, Money amount)

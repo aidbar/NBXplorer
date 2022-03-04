@@ -1071,8 +1071,11 @@ namespace NBXplorer.Tests
 				await rebroadcaster.RebroadcastPeriodically(tester.Client.Network, bobSource, new[] { replacement.GetHash() });
 				rebroadcast = await rebroadcaster.RebroadcastAll();
 				{
-					var cleaned = Assert.Single(rebroadcast.Cleaned);
-					Assert.Equal(orphanedBlock, cleaned.BlockHash);
+					if (backend == Backend.DBTrie)
+					{
+						var cleaned = Assert.Single(rebroadcast.Cleaned);
+						Assert.Equal(orphanedBlock, cleaned.BlockHash);
+					}
 				}
 			}
 		}

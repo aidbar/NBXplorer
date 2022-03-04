@@ -39,7 +39,7 @@ namespace NBXplorer.HostedServices
 				var conn2Str = builder.ToString();
 				var conn2 = new Npgsql.NpgsqlConnection(conn2Str);
 				await conn2.OpenAsync();
-				await conn2.ExecuteAsync($"CREATE DATABASE {dbname}");
+				await conn2.ExecuteAsync($"CREATE DATABASE {dbname} TEMPLATE 'template0' LC_CTYPE 'C' LC_COLLATE 'C' ENCODING 'UTF8'");
 				goto retry;
 			}
 		}
@@ -81,6 +81,7 @@ namespace NBXplorer.HostedServices
 
 		public Task StopAsync(CancellationToken cancellationToken)
 		{
+			Npgsql.NpgsqlConnection.ClearAllPools();
 			return Task.CompletedTask;
 		}
 	}

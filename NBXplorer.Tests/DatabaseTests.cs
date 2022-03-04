@@ -14,6 +14,7 @@ using Microsoft.Extensions.Hosting;
 using Xunit.Abstractions;
 using Microsoft.Extensions.Configuration;
 using NBXplorer.Configuration;
+using System.Runtime.CompilerServices;
 
 namespace NBXplorer.Tests
 {
@@ -122,7 +123,7 @@ namespace NBXplorer.Tests
 		[Fact]
 		public async Task CanRunMigrateTwice()
 		{
-			var db = $"dbtest{RandomUtils.GetUInt32()}";
+			var db = $"CanRunMigrateTwice_{RandomUtils.GetUInt32()}";
 			await using (var conn = await GetConnection(db))
 			{
 			}
@@ -131,9 +132,9 @@ namespace NBXplorer.Tests
 			}
 		}
 
-		private async Task<DbConnection> GetConnection(string dbName = null)
+		private async Task<DbConnection> GetConnection(string dbName = null, [CallerMemberName] string applicationName = null)
 		{
-			var connectionString = ServerTester.GetTestPostgres(dbName);
+			var connectionString = ServerTester.GetTestPostgres(dbName, applicationName);
 			var conf = new ConfigurationBuilder().AddInMemoryCollection(new[] { new KeyValuePair<string, string>("POSTGRES", connectionString) }).Build();
 			var container = new ServiceCollection();
 			container.AddSingleton<IConfiguration>(conf);
