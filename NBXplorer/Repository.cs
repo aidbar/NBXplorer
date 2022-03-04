@@ -1289,6 +1289,18 @@ namespace NBXplorer
 		{
 			return GetMatches(new[] { tx }, blockId, now, useCache);
 		}
+		public async Task<TrackedTransaction[]> GetMatches(Block block, uint256 blockId, DateTimeOffset now, bool useCache)
+		{
+			var matches = await GetMatches(block.Transactions, blockId, now, useCache);
+			if (matches.Length > 0)
+			{
+				var blockIndexes =  block.Transactions.Select((tx, i) => (tx, i))
+								  .ToDictionary(o => o.tx.GetHash(), o => o.i);
+				foreach (var match in matches)
+					match.BlockIndex = blockIndexes[match.TransactionHash];
+			}
+			return matches;
+		}
 
 		public async Task<TrackedTransaction[]> GetMatches(IList<NBitcoin.Transaction> txs, uint256 blockId, DateTimeOffset now, bool useCache)
 		{

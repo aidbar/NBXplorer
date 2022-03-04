@@ -30,6 +30,7 @@ namespace NBXplorer
 		Task<BlockLocator> GetIndexProgress();
 		Task<MultiValueDictionary<Script, KeyPathInformation>> GetKeyInformations(IList<Script> scripts);
 		Task<IList<NewEventBase>> GetLatestEvents(int limit = 10);
+		Task<TrackedTransaction[]> GetMatches(Block block, uint256 blockId, DateTimeOffset now, bool useCache);
 		Task<TrackedTransaction[]> GetMatches(IList<Transaction> txs, uint256 blockId, DateTimeOffset now, bool useCache);
 		Task<TrackedTransaction[]> GetMatches(Transaction tx, uint256 blockId, DateTimeOffset now, bool useCache);
 		Task<TMetadata> GetMetadata<TMetadata>(TrackedSource source, string key) where TMetadata : class;

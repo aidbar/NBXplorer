@@ -222,7 +222,10 @@ namespace NBXplorer
 
 		record ScriptPubKeyQuery(string code, string id);
 
-
+		public Task<TrackedTransaction[]> GetMatches(Block block, uint256 blockId, DateTimeOffset now, bool useCache)
+		{
+			return GetMatches(block.Transactions, blockId, now, useCache);
+		}
 
 		public async Task<TrackedTransaction[]> GetMatches(IList<Transaction> txs, uint256 blockId, DateTimeOffset now, bool useCache)
 		{
@@ -553,7 +556,7 @@ namespace NBXplorer
 				return;
 			await using var helper = await connectionFactory.CreateConnectionHelper(Network);
 			var connection = helper.Connection;
-			await helper.SaveTransactions(transactions.Select(t => (t.Transaction, t.TransactionHash, t.BlockHash)), null);
+			await helper.SaveTransactions(transactions.Select(t => (t.Transaction, t.TransactionHash, t.BlockHash, t.BlockIndex)), null);
 			foreach (var tx in transactions)
 			{
 				var outs = tx.GetReceivedOutputs()
@@ -610,7 +613,7 @@ namespace NBXplorer
 		public async Task<List<Repository.SavedTransaction>> SaveTransactions(DateTimeOffset now, Transaction[] transactions, uint256 blockHash)
 		{
 			await using var helper = await connectionFactory.CreateConnectionHelper(Network);
-			await helper.SaveTransactions(transactions.Select(t => (t, null as uint256, blockHash)), now);
+			await helper.SaveTransactions(transactions.Select(t => (t, null as uint256, blockHash, null as int?)), now);
 			return transactions.Select(t => new Repository.SavedTransaction()
 			{
 				BlockHash = blockHash,

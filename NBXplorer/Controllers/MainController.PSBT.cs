@@ -426,16 +426,23 @@ namespace NBXplorer.Controllers
 		}
 
 
-		static bool NeedUTXO(PSBTInput input)
+		static bool NeedUTXO(UpdatePSBTRequest request, PSBTInput input)
 		{
 			if (input.IsFinalized())
 				return false;
-			var needNonWitnessUTXO = !input.PSBT.Network.Consensus.NeverNeedPreviousTxForSigning &&
-									!((input.GetSignableCoin() ?? input.GetCoin())?.IsMalleable is false);
+			if (request.AlwaysIncludeNonWitnessUTXO && input.NonWitnessUtxo is null)
+				return true;
+			var needNonWitnessUTXO = NeedNonWitnessUTXO(request, input);
 			if (needNonWitnessUTXO)
 				return input.NonWitnessUtxo == null;
 			else
 				return input.WitnessUtxo == null && input.NonWitnessUtxo == null;
+		}
+
+		private static bool NeedNonWitnessUTXO(UpdatePSBTRequest request, PSBTInput input)
+		{
+			return request.AlwaysIncludeNonWitnessUTXO || (!input.PSBT.Network.Consensus.NeverNeedPreviousTxForSigning &&
+												!((input.GetSignableCoin() ?? input.GetCoin())?.IsMalleable is false));
 		}
 
 		private async Task UpdateUTXO(UpdatePSBTRequest update, IRepository repo, BitcoinDWaiter rpc)
@@ -459,9 +466,9 @@ namespace NBXplorer.Controllers
 			{
 				AnnotatedTransactionCollection txs = null;
 				// First, we check for data in our history
-				foreach (var input in update.PSBT.Inputs.Where(psbtInput => update.AlwaysIncludeNonWitnessUTXO || NeedUTXO(psbtInput)))
+				foreach (var input in update.PSBT.Inputs.Where(psbtInput => NeedUTXO(update, psbtInput)))
 				{
-					txs = txs ?? await GetAnnotatedTransactions(repo, ChainProvider.GetChain(repo.Network), new DerivationSchemeTrackedSource(derivationScheme), true);
+					txs = txs ?? await GetAnnotatedTransactions(repo, ChainProvider.GetChain(repo.Network), new DerivationSchemeTrackedSource(derivationScheme), NeedNonWitnessUTXO(update, input));
 					if (txs.GetByTxId(input.PrevOut.Hash) is AnnotatedTransaction tx)
 					{
 						if (!tx.Record.Key.IsPruned)
@@ -479,7 +486,7 @@ namespace NBXplorer.Controllers
 
 			// then, we search data in the saved transactions
 			await Task.WhenAll(update.PSBT.Inputs
-							.Where(psbtInput => update.AlwaysIncludeNonWitnessUTXO || NeedUTXO(psbtInput))
+							.Where(psbtInput => NeedUTXO(update, psbtInput))
 							.Select(async (input) =>
 							{
 								// If this is not segwit, or we are unsure of it, let's try to grab from our saved transactions
@@ -498,8 +505,8 @@ namespace NBXplorer.Controllers
 			{
 				var batch = rpc.RPC.PrepareBatch();
 				var getTransactions = Task.WhenAll(update.PSBT.Inputs
-					.Where(psbtInput => update.AlwaysIncludeNonWitnessUTXO || NeedUTXO(psbtInput))
-					.Where(input => input.NonWitnessUtxo == null)
+					.Where(psbtInput => NeedUTXO(update, psbtInput))
+					.Where(input => input.NonWitnessUtxo == null && NeedNonWitnessUTXO(update, input))
 					.Select(async input =>
 				   {
 					   var tx = await batch.GetRawTransactionAsync(input.PrevOut.Hash, false);

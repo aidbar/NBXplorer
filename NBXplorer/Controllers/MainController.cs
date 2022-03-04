@@ -968,9 +968,9 @@ namespace NBXplorer.Controllers
 			}
 		}
 
-		private async Task<AnnotatedTransactionCollection> GetAnnotatedTransactions(IRepository repo, SlimChain chain, TrackedSource trackedSource, bool needTx, uint256 txId = null)
+		private async Task<AnnotatedTransactionCollection> GetAnnotatedTransactions(IRepository repo, SlimChain chain, TrackedSource trackedSource, bool includeTransaction, uint256 txId = null)
 		{
-			var transactions = await repo.GetTransactions(trackedSource, txId, needTx, this.HttpContext.RequestAborted);
+			var transactions = await repo.GetTransactions(trackedSource, txId, includeTransaction, this.HttpContext.RequestAborted);
 
 			// If the called is interested by only a single txId, we need to fetch the parents as well
 			if (txId != null)

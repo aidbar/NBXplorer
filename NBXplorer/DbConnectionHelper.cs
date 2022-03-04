@@ -49,7 +49,7 @@ namespace NBXplorer
 			return await Connection.ExecuteAsync("INSERT INTO wallets VALUES (@id) ON CONFLICT DO NOTHING", new { id = walletId }) == 1;
 		}
 
-		public async Task SaveTransactions(IEnumerable<(Transaction? Transaction, uint256? Id, uint256? BlockId)> transactions, DateTimeOffset? now)
+		public async Task SaveTransactions(IEnumerable<(Transaction? Transaction, uint256? Id, uint256? BlockId, int? BlockIndex)> transactions, DateTimeOffset? now)
 		{
 			var parameters = transactions.Select(tx =>
 			new {
@@ -58,14 +58,15 @@ namespace NBXplorer
 				id = tx.Id?.ToString() ?? tx.Transaction?.GetHash()?.ToString(),
 				raw = tx.Transaction?.ToBytes(),
 				seen_at = now is null ? default : now.Value,
+				blk_idx = tx.BlockIndex is int i ? i : 0
 			})
 			.Where(o => o.id is not null)
 			.ToArray();
 			if (now is null)
 				await Connection.ExecuteAsync("INSERT INTO txs VALUES (@code, @id, @raw) ON CONFLICT (code, tx_id) DO UPDATE SET raw = COALESCE(@raw, txs.raw)", parameters);
 			else
-				await Connection.ExecuteAsync("INSERT INTO txs VALUES (@code, @id, @raw, NULL, @seen_at) ON CONFLICT (code, tx_id) DO UPDATE SET seen_at=LEAST(@seen_at, txs.seen_at), raw = COALESCE(@raw, txs.raw)", parameters);
-			await Connection.ExecuteAsync("INSERT INTO txs_blks VALUES (@code, @id, @blk_id) ON CONFLICT DO NOTHING", parameters.Where(p => p.blk_id is not null).AsList());
+				await Connection.ExecuteAsync("INSERT INTO txs VALUES (@code, @id, @raw, NULL, NULL, @seen_at) ON CONFLICT (code, tx_id) DO UPDATE SET seen_at=LEAST(@seen_at, txs.seen_at), raw = COALESCE(@raw, txs.raw)", parameters);
+			await Connection.ExecuteAsync("INSERT INTO txs_blks VALUES (@code, @id, @blk_id, @blk_idx) ON CONFLICT DO NOTHING", parameters.Where(p => p.blk_id is not null).AsList());
 		}
 		public async Task CreateDescriptors(string walletId, Descriptor[] descriptors)
 		{

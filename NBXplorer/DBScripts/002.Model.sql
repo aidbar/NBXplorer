@@ -13,6 +13,7 @@ CREATE TABLE IF NOT EXISTS txs (
   tx_id TEXT NOT NULL,
   raw BYTEA DEFAULT NULL,
   blk_id TEXT DEFAULT NULL,
+  blk_idx INT DEFAULT NULL,
   seen_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
  /*  PRIMARY KEY (code, tx_id) Handled by index below , */
   FOREIGN KEY (code, blk_id) REFERENCES blks ON DELETE SET NULL);
@@ -31,12 +32,12 @@ AS $$
 BEGIN
 	IF NEW.confirmed THEN
 	  UPDATE txs t 
-	  SET blk_id=NEW.blk_id
-	  FROM (SELECT tb.tx_id FROM txs_blks tb WHERE code=NEW.code AND blk_id=NEW.blk_id) AS q  
+	  SET blk_id=NEW.blk_id, blk_idx=q.blk_idx
+	  FROM (SELECT tb.tx_id, tb.blk_idx FROM txs_blks tb WHERE code=NEW.code AND blk_id=NEW.blk_id) AS q  
 	  WHERE t.code=NEW.code AND t.tx_id=q.tx_id;
 	ELSE
 	  UPDATE txs t 
-	  SET blk_id=NULL
+	  SET blk_id=NULL, blk_idx=NULL
 	  FROM (SELECT tb.tx_id FROM txs_blks tb WHERE code=NEW.code AND blk_id=NEW.blk_id) AS q  
 	  WHERE t.code=NEW.code AND t.tx_id=q.tx_id AND t.blk_id=NEW.blk_id;
 	END IF;
@@ -54,6 +55,7 @@ CREATE TABLE IF NOT EXISTS txs_blks (
   code TEXT NOT NULL,
   tx_id TEXT NOT NULL,
   blk_id TEXT NOT NULL,
+  blk_idx INT DEFAULT NULL,
   PRIMARY KEY(code, tx_id, blk_id),
   FOREIGN KEY(code, tx_id) REFERENCES txs ON DELETE CASCADE,
   FOREIGN KEY(code, blk_id) REFERENCES blks ON DELETE CASCADE);
@@ -63,14 +65,14 @@ CREATE OR REPLACE FUNCTION set_tx_blk_id2()
   LANGUAGE PLPGSQL
 AS $$
 BEGIN
-	IF EXISTS (SELECT b.blk_id FROM blks b WHERE b.blk_id=NEW.blk_id AND b.confirmed='t') THEN
+	IF EXISTS (SELECT b.blk_id FROM blks b WHERE b.code=NEW.code AND b.blk_id=NEW.blk_id AND b.confirmed='t') THEN
 	  UPDATE txs t 
-	  SET blk_id=NEW.blk_id
+	  SET blk_id=NEW.blk_id, blk_idx=NEW.blk_idx
 	  FROM (SELECT tb.tx_id FROM txs_blks tb WHERE code=NEW.code AND blk_id=NEW.blk_id) AS q  
 	  WHERE t.code=NEW.code AND t.tx_id=q.tx_id;
 	ELSE
 	  UPDATE txs t 
-	  SET blk_id=NULL
+	  SET blk_id=NULL, blk_idx=NULL
 	  FROM (SELECT tb.tx_id FROM txs_blks tb WHERE code=NEW.code AND blk_id=NEW.blk_id) AS q  
 	  WHERE t.code=NEW.code AND t.tx_id=q.tx_id AND t.blk_id=NEW.blk_id;
 	END IF;

@@ -184,7 +184,7 @@ namespace NBXplorer
 					await Repository.NewBlock(slimBlockHeader);
 				DateTimeOffset now = DateTimeOffset.UtcNow;
 				var matches =
-					(await Repository.GetMatches(block.Transactions, blockHash, now, true))
+					(await Repository.GetMatches(block, blockHash, now, true))
 					.ToArray();
 				await SaveMatches(matches, blockHash, now, true);
 				if (slimBlockHeader != null)

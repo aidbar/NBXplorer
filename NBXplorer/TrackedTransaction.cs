@@ -128,6 +128,8 @@ namespace NBXplorer
 			}
 		}
 
+		public int? BlockIndex { get; set; }
+
 		public IEnumerable<MatchedOutput> GetReceivedOutputs()
 		{
 			return this.ReceivedCoins
