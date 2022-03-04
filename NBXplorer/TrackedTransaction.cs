@@ -100,7 +100,7 @@ namespace NBXplorer
 			get; set;
 		}
 
-		public TrackedTransactionKey Key { get; }
+		public TrackedTransactionKey Key { get; set; }
 		public uint256 BlockHash => Key.BlockHash;
 		public uint256 TransactionHash => Key.TxId;
 

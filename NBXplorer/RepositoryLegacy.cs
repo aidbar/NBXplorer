@@ -412,7 +412,9 @@ namespace NBXplorer
 					"SELECT	tx_id, raw FROM txs WHERE code=@code AND tx_id=ANY(@txId) AND raw IS NOT NULL;", new { code = Network.CryptoCode, txId = trackedById.Keys.AsList() });
 				foreach (var row in txRaws)
 				{
-					trackedById[row.tx_id].Transaction = Transaction.Load(row.raw, Network.NBitcoinNetwork);
+					var tracked = trackedById[row.tx_id];
+					tracked.Transaction = Transaction.Load(row.raw, Network.NBitcoinNetwork);
+					tracked.Key = new TrackedTransactionKey(tracked.Key.TxId, tracked.Key.BlockHash, false);
 				}
 			}
 
