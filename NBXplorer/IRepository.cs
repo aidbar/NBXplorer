@@ -20,7 +20,6 @@ namespace NBXplorer
 		Task Prune(TrackedSource trackedSource, IEnumerable<TrackedTransaction> prunable);
 		Task UpdateAddressPool(DerivationSchemeTrackedSource trackedSource, Dictionary<DerivationFeature, int?> highestKeyIndexFound);
 		Task CancelReservation(DerivationStrategyBase strategy, KeyPath[] keyPaths);
-		TrackedTransaction CreateTrackedTransaction(TrackedSource trackedSource, ITrackedTransactionSerializable tx);
 		TrackedTransaction CreateTrackedTransaction(TrackedSource trackedSource, TrackedTransactionKey transactionKey, IEnumerable<Coin> coins, Dictionary<Script, KeyPath> knownScriptMapping);
 		TrackedTransaction CreateTrackedTransaction(TrackedSource trackedSource, TrackedTransactionKey transactionKey, Transaction tx, Dictionary<Script, KeyPath> knownScriptMapping);
 		ValueTask<int> DefragmentTables(CancellationToken cancellationToken = default);

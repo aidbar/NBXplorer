@@ -2,6 +2,7 @@
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using NBXplorer.Configuration;
+using Npgsql;
 using System.Data.Common;
 using System.Threading.Tasks;
 
@@ -35,10 +36,20 @@ namespace NBXplorer
 		}
 		public async Task<DbConnection> CreateConnection()
 		{
+			int maxRetries = 10;
+			int retries = maxRetries;
+			retry:
 			var conn = new Npgsql.NpgsqlConnection(ConnectionString);
 			try
 			{
 				await conn.OpenAsync();
+			}
+			catch (PostgresException ex) when (ex.IsTransient && retries > 0)
+			{
+				retries--;
+				await conn.DisposeAsync();
+				await Task.Delay((maxRetries - retries) * 100);
+				goto retry;
 			}
 			catch
 			{

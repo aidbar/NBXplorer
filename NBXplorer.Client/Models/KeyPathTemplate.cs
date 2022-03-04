@@ -149,6 +149,13 @@ namespace NBXplorer
 			return builder.ToString();
 		}
 
+		public uint GetIndex(KeyPath keypath)
+		{
+			if (TryMatchTemplate(keypath, out var index))
+				return index;
+			throw new ArgumentException("Impossible to get the index of this keypath", nameof(keypath));
+		}
+
 		public static object Parse(object keypathtemplate)
 		{
 			throw new NotImplementedException();

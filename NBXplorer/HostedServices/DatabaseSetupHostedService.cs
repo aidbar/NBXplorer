@@ -27,7 +27,7 @@ namespace NBXplorer.HostedServices
 			retry:
 			try
 			{
-				var conn = await ConnectionFactory.CreateConnection();
+				await using var conn = await ConnectionFactory.CreateConnection();
 				await RunScripts(conn);
 			}
 			catch (Npgsql.NpgsqlException pgex) when (pgex.SqlState == "3D000")

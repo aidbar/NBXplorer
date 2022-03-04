@@ -100,14 +100,24 @@ namespace NBXplorer
 		public KeyPathTemplates KeyPathTemplates { get; }
 		public Serializer Serializer { get; set; }
 
-		public Task CancelReservation(DerivationStrategyBase strategy, KeyPath[] keyPaths)
+		public async Task CancelReservation(DerivationStrategyBase strategy, KeyPath[] keyPaths)
 		{
-			throw new NotImplementedException();
-		}
-
-		public TrackedTransaction CreateTrackedTransaction(TrackedSource trackedSource, ITrackedTransactionSerializable tx)
-		{
-			throw new NotImplementedException();
+			await using var conn = await GetConnection();
+			var parameters = keyPaths
+				.Select(o =>
+				{
+					var descriptor = new LegacyDescriptor(strategy, KeyPathTemplates.GetKeyPathTemplate(o));
+					return new
+					{
+						code = Network.CryptoCode,
+						descriptor = descriptor.ToString(),
+						idx = (int)descriptor.KeyPathTemplate.GetIndex(o)
+					};
+				})
+				.ToList();
+			await conn.Connection.ExecuteAsync(
+				"WITH cte AS (SELECT code, script FROM descriptors_scripts WHERE code=@code AND descriptor=@descriptor AND idx=@idx) " +
+				"UPDATE scripts s SET used='f' FROM cte WHERE s.code=cte.code AND s.script=cte.script", parameters);
 		}
 
 		public TrackedTransaction CreateTrackedTransaction(TrackedSource trackedSource, TrackedTransactionKey transactionKey, IEnumerable<Coin> coins, Dictionary<Script, KeyPath> knownScriptMapping)
@@ -444,7 +454,7 @@ namespace NBXplorer
 			await using var connection = await connectionFactory.CreateConnectionHelper(Network);
 			 var keyInfo = await connection.GetUnused(new LegacyDescriptor(strategy, KeyPathTemplates.GetKeyPathTemplate(derivationFeature)), n, reserve);
 			if (keyInfo != null)
-				await ImportAddressToRPC(keyInfo.TrackedSource, keyInfo.Address, keyInfo.KeyPath);
+				await ImportAddressToRPC(connection, keyInfo.TrackedSource, keyInfo.Address, keyInfo.KeyPath);
 			return keyInfo;
 		}
 
@@ -473,12 +483,13 @@ namespace NBXplorer
 			return new LegacyDescriptor(((DerivationSchemeTrackedSource)trackedSource).DerivationStrategy, keyPathTemplate);
 		}
 
-		private async Task ImportAddressToRPC(TrackedSource trackedSource, BitcoinAddress address, KeyPath keyPath)
+		private async Task ImportAddressToRPC(DbConnectionHelper connection, TrackedSource trackedSource, BitcoinAddress address, KeyPath keyPath)
 		{
-			var shouldImportRPC = (await GetMetadata<string>(trackedSource, WellknownMetadataKeys.ImportAddressToRPC)).AsBoolean();
+			var wid = trackedSource.GetLegacyWalletId(Network);
+			var shouldImportRPC = (await connection.GetMetadata<string>(wid, WellknownMetadataKeys.ImportAddressToRPC)).AsBoolean();
 			if (!shouldImportRPC)
 				return;
-			var accountKey = await GetMetadata<BitcoinExtKey>(trackedSource, WellknownMetadataKeys.AccountHDKey);
+			var accountKey = await connection.GetMetadata<BitcoinExtKey>(wid, WellknownMetadataKeys.AccountHDKey);
 			await ImportAddressToRPC(accountKey, address, keyPath);
 		}
 		private async Task ImportAddressToRPC(BitcoinExtKey accountKey, BitcoinAddress address, KeyPath keyPath)
