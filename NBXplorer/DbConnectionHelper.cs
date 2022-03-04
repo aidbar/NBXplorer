@@ -166,9 +166,9 @@ namespace NBXplorer
 		}
 
 		record SpentUTXORow(System.String code, System.String tx_id, System.Int32 idx, System.String script, System.Int64 value, bool immature, System.DateTime created_at, string spent_outpoint);
-		public Task<Dictionary<OutPoint, TxOut>> GetUTXOs(IList<OutPoint> outPoints)
+		public Task<Dictionary<OutPoint, TxOut>> GetOutputs(IList<OutPoint> outPoints)
 		{
-			return GetUTXOs(outPoints.Select(o => o.ToString()).ToArray());
+			return GetOutputs(outPoints.Select(o => o.ToString()).ToArray());
 		}
 
 		record UnusedScriptRow(string script, string addr, string keypath);
@@ -200,7 +200,7 @@ namespace NBXplorer
 				// TODO: Redeem = 
 			};
 		}
-		public async Task<Dictionary<OutPoint, TxOut>> GetUTXOs(IList<string> outPoints)
+		public async Task<Dictionary<OutPoint, TxOut>> GetOutputs(IList<string> outPoints)
 		{
 			Dictionary<OutPoint, TxOut> result = new Dictionary<OutPoint, TxOut>();
 			foreach (var row in await Connection.QueryAsync<SpentUTXORow>(

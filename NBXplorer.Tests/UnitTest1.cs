@@ -1045,16 +1045,18 @@ namespace NBXplorer.Tests
 				Logs.Tester.LogInformation("Rebroadcasting the replaced TX should clean two tx record (tx3 and tx4) from the list");
 				await rebroadcaster.RebroadcastPeriodically(tester.Client.Network, bobSource, new[] { replacement.GetHash() });
 				rebroadcast = await rebroadcaster.RebroadcastAll();
-				Assert.Equal(2, rebroadcast.Cleaned.Count);
-				foreach (var cleaned in rebroadcast.Cleaned)
+				if (backend == Backend.DBTrie)
 				{
-					Assert.Null(cleaned.BlockHash);
+					Assert.Equal(2, rebroadcast.Cleaned.Count);
+					foreach (var cleaned in rebroadcast.Cleaned)
+					{
+						Assert.Null(cleaned.BlockHash);
+					}
+					Assert.Contains(rebroadcast.Cleaned, o => o.Key.TxId == tx4.GetHash() && o.BlockHash is null);
+					Assert.Contains(rebroadcast.Cleaned, o => o.Key.TxId == replacement.GetHash());
+					// Only one missing input, as there is only one txid
+					Assert.Equal(2, rebroadcast.MissingInputs.Count);
 				}
-				Assert.Contains(rebroadcast.Cleaned, o => o.Key.TxId == tx4.GetHash() && o.BlockHash is null);
-				Assert.Contains(rebroadcast.Cleaned, o => o.Key.TxId == replacement.GetHash());
-				// Only one missing input, as there is only one txid
-				Assert.Equal(2, rebroadcast.MissingInputs.Count);
-
 				// Nothing should be cleaned now
 				await rebroadcaster.RebroadcastPeriodically(tester.Client.Network, bobSource, new[] { replacement.GetHash() });
 				rebroadcast = await rebroadcaster.RebroadcastAll();
@@ -2593,6 +2595,23 @@ namespace NBXplorer.Tests
 				Assert.Equal(address.ScriptPubKey, utxo.Unconfirmed.UTXOs[0].ScriptPubKey);
 				var address2 = tester.Client.GetUnused(pubkey, DerivationFeature.Direct);
 				Assert.Equal(new KeyPath(1), address2.KeyPath);
+
+				Logs.Tester.LogInformation("Let's check see if an unconf tx can be conf then unconf again");
+				tester.RPC.Generate(1);
+				tester.Notifications.WaitForTransaction(pubkey, fundingTx);
+				var expectedUTXO = utxo.Unconfirmed.UTXOs[0].Outpoint;
+				utxo = tester.Client.GetUTXOs(pubkey);
+				Assert.Contains(expectedUTXO, utxo.Confirmed.UTXOs.Select(o => o.Outpoint));
+				Assert.DoesNotContain(expectedUTXO, utxo.Unconfirmed.UTXOs.Select(o => o.Outpoint));
+				tester.RPC.InvalidateBlock(tester.RPC.GetBestBlockHash());
+				tester.RPC.SendCommand("generateblock", new object[] {
+					new Key().GetAddress(ScriptPubKeyType.Legacy, tester.Network).ToString(),
+					new JArray()
+				});
+				tester.Notifications.WaitForBlocks(tester.RPC.GetBestBlockHash());
+				utxo = tester.Client.GetUTXOs(pubkey);
+				Assert.DoesNotContain(expectedUTXO, utxo.Confirmed.UTXOs.Select(o => o.Outpoint));
+				Assert.Contains(expectedUTXO, utxo.Unconfirmed.UTXOs.Select(o => o.Outpoint));
 			}
 		}
 

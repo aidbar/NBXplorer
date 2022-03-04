@@ -293,7 +293,7 @@ namespace NBXplorer
 			}
 
 			await using var connection = await connectionFactory.CreateConnectionHelper(Network);
-			foreach (var kv in await connection.GetUTXOs(outpoints))
+			foreach (var kv in await connection.GetOutputs(outpoints))
 			{
 				if (kv.Value is null)
 					continue;
@@ -365,7 +365,7 @@ namespace NBXplorer
 		public async Task<Dictionary<OutPoint, TxOut>> GetOutPointToTxOut(IList<OutPoint> outPoints)
 		{
 			await using var connection = await connectionFactory.CreateConnectionHelper(Network);
-			return await connection.GetUTXOs(outPoints);
+			return await connection.GetOutputs(outPoints);
 		}
 
 		record SavedTransactionRow(byte[] raw, string blk_id, DateTime seen_at);
@@ -383,7 +383,7 @@ namespace NBXplorer
 			}};
 		}
 
-		public async Task<TrackedTransaction[]> GetTransactions(TrackedSource trackedSource, uint256 txId = null, bool needTx = true, CancellationToken cancellation = default)
+		public async Task<TrackedTransaction[]> GetTransactions(TrackedSource trackedSource, uint256 txId = null, bool includeTransactions = true, CancellationToken cancellation = default)
 		{
 			await using var connection = await connectionFactory.CreateConnectionHelper(Network);
 			var tip = await connection.GetTip();
@@ -419,16 +419,18 @@ namespace NBXplorer
 				}
 			}
 
-			if (needTx)
+			var txsToFetch = includeTransactions ? trackedById.Keys.AsList() : 
+												  // For double spend detection, we need the full transactions from unconfs
+												  trackedById.Where(t => t.Value.BlockHash is null).Select(t => t.Key).AsList();
+			var txRaws = await connection.Connection.QueryAsync<(string tx_id, byte[] raw)>(
+				"SELECT	tx_id, raw FROM txs WHERE code=@code AND tx_id=ANY(@txId) AND raw IS NOT NULL;", new { code = Network.CryptoCode, txId = txsToFetch });
+			foreach (var row in txRaws)
 			{
-				var txRaws = await connection.Connection.QueryAsync<(string tx_id, byte[] raw)>(
-					"SELECT	tx_id, raw FROM txs WHERE code=@code AND tx_id=ANY(@txId) AND raw IS NOT NULL;", new { code = Network.CryptoCode, txId = trackedById.Keys.AsList() });
-				foreach (var row in txRaws)
-				{
-					var tracked = trackedById[row.tx_id];
-					tracked.Transaction = Transaction.Load(row.raw, Network.NBitcoinNetwork);
-					tracked.Key = new TrackedTransactionKey(tracked.Key.TxId, tracked.Key.BlockHash, false);
-				}
+				var tracked = trackedById[row.tx_id];
+				tracked.Transaction = Transaction.Load(row.raw, Network.NBitcoinNetwork);
+				tracked.Key = new TrackedTransactionKey(tracked.Key.TxId, tracked.Key.BlockHash, false);
+				if (tracked.BlockHash is null) // Only need the spend outpoint for double spend detection on unconf txs
+					tracked.SpentOutpoints.AddRange(tracked.Transaction.Inputs.Select(o => o.PrevOut));
 			}
 
 			return trackedById.Values.Select(c =>
