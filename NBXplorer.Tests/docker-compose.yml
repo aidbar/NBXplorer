@@ -1,6 +1,14 @@
 version: "3"
 services:
 
+  tests:
+    build:
+      context: ..
+      dockerfile: NBXplorer.Tests/Dockerfile
+    environment:
+          TESTS_POSTGRES: User ID=postgres;Include Error Detail=true;Host=postgres;Port=5432
+    depends_on:
+      - postgres
   # The dev container is not actually used, it is just handy to run `docker-compose up dev` to start all services
   dev:
     image: alpine:3.7

@@ -204,8 +204,18 @@ namespace NBXplorer.Tests
 
 		public static string GetTestPostgres(string dbName = null)
 		{
+			var connectionString = Environment.GetEnvironmentVariable("TESTS_POSTGRES");
 			dbName ??= $"dbtest{RandomUtils.GetUInt32()}";
-			var connectionString = $"User ID=postgres;Host=localhost;Include Error Detail=true;Port=39383;Database={dbName}";
+			if (string.IsNullOrEmpty(connectionString))
+			{
+				connectionString = $"User ID=postgres;Host=localhost;Include Error Detail=true;Port=39383;Database={dbName}";
+			}
+			else
+			{
+				Npgsql.NpgsqlConnectionStringBuilder builder = new Npgsql.NpgsqlConnectionStringBuilder(connectionString);
+				builder.Database = dbName;
+				connectionString = builder.ToString();
+			}
 			return connectionString;
 		}
 

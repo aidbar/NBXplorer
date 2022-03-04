@@ -7,11 +7,7 @@ jobs:
       - checkout
       - run:
           command: |
-            dotnet --info
-            dotnet build -c Release
-            cd NBXplorer.Tests
-            docker-compose up -d
-            dotnet test -c Release --no-build --filter "Azure!=Azure&Broker!=RabbitMq" -v n --logger "console;verbosity=normal" < /dev/null
+            cd .circleci && ./run-tests.sh
 
   # publish jobs require $DOCKERHUB_REPO, $DOCKERHUB_USER, $DOCKERHUB_PASS defined
   amd64:
