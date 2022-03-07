@@ -57,6 +57,7 @@ namespace NBXplorer
 				blk_id = tx.BlockId?.ToString(),
 				id = tx.Id?.ToString() ?? tx.Transaction?.GetHash()?.ToString(),
 				raw = tx.Transaction?.ToBytes(),
+				mempool = tx.BlockId is null,
 				seen_at = now is null ? default : now.Value,
 				blk_idx = tx.BlockIndex is int i ? i : 0
 			})
@@ -65,7 +66,7 @@ namespace NBXplorer
 			if (now is null)
 				await Connection.ExecuteAsync("INSERT INTO txs VALUES (@code, @id, @raw) ON CONFLICT (code, tx_id) DO UPDATE SET raw = COALESCE(@raw, txs.raw)", parameters);
 			else
-				await Connection.ExecuteAsync("INSERT INTO txs VALUES (@code, @id, @raw, NULL, NULL, @seen_at) ON CONFLICT (code, tx_id) DO UPDATE SET seen_at=LEAST(@seen_at, txs.seen_at), raw = COALESCE(@raw, txs.raw)", parameters);
+				await Connection.ExecuteAsync("INSERT INTO txs VALUES (@code, @id, @raw, @blk_id, @blk_idx, @mempool, NULL, @seen_at) ON CONFLICT (code, tx_id) DO UPDATE SET seen_at=LEAST(@seen_at, txs.seen_at), raw = COALESCE(@raw, txs.raw)", parameters);
 			await Connection.ExecuteAsync("INSERT INTO txs_blks VALUES (@code, @id, @blk_id, @blk_idx) ON CONFLICT DO NOTHING", parameters.Where(p => p.blk_id is not null).AsList());
 		}
 		public async Task CreateDescriptors(string walletId, Descriptor[] descriptors)
@@ -75,39 +76,6 @@ namespace NBXplorer
 				"INSERT INTO descriptors VALUES (@code, @descriptor) ON CONFLICT DO NOTHING;" +
 				"INSERT INTO descriptors_wallets VALUES (@code, @descriptor, @walletId) ON CONFLICT DO NOTHING", rows);
 		}
-
-		public async Task<List<UTXO>> GetWalletUTXOWithDescriptors(NBXplorerNetwork network, string walletId, int currentHeight)
-		{
-			var rows = await Connection.QueryAsync<(string tx_id, int idx, string script, long value, bool immature, string keypath, long height, DateTime seen_at)>
-							("SELECT tx_id, u.idx, script, value, immature, keypath, height, t.seen_at FROM get_wallet_conf_utxos(@code, @walletId) u " +
-							"INNER JOIN tracked_scripts ts USING (code, script) " +
-							"INNER JOIN txs t USING (code, tx_id) " +
-							$"WHERE u.code=@code AND ts.wallet_id=@walletId", new { code = network.CryptoCode, walletId });
-			rows.TryGetNonEnumeratedCount(out var c);
-			var result = new List<UTXO>(c);
-			foreach (var row in rows)
-			{
-				if (row.immature)
-					continue;
-				var txid = uint256.Parse(row.tx_id);
-				var keypath = row.keypath is null ? null : KeyPath.Parse(row.keypath);
-				var utxo = new UTXO()
-				{
-					Confirmations = (int)(currentHeight - row.height + 1),
-					Index = row.idx,
-					Outpoint = new OutPoint(txid, row.idx),
-					KeyPath = keypath,
-					ScriptPubKey = Script.FromHex(row.script),
-					Timestamp = new DateTimeOffset(row.seen_at),
-					TransactionHash = txid,
-					Value = Money.Satoshis(row.value),
-					Feature = keypath is null ? null : KeyPathTemplates.GetDerivationFeature(keypath)
-				};
-				result.Add(utxo);
-			}
-			return result;
-		}
-
 		record DescriptorScriptInsert(string code, string descriptor, int idx, string script, string keypath, string addr);
 		public async Task<int> GenerateAddresses(Descriptor descriptor, GenerateAddressQuery? query)
 		{

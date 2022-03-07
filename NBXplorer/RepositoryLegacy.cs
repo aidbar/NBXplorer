@@ -533,7 +533,7 @@ namespace NBXplorer
 			if (prunable.TryGetNonEnumeratedCount(out var c) && c == 0)
 				return;
 			await using var helper = await GetConnection();
-			var receivedCoinsToDelete = 
+			var receivedCoinsToDelete =
 				prunable
 				.SelectMany(c => c.ReceivedCoins)
 				.Select(c => new
@@ -648,7 +648,7 @@ namespace NBXplorer
 			await conn.Connection.ExecuteAsync(
 				"INSERT INTO wallets VALUES (@walletId) ON CONFLICT DO NOTHING;" +
 				"INSERT INTO scripts VALUES (@code, @script, @addr) ON CONFLICT DO NOTHING;" +
-				"INSERT INTO scripts_wallets VALUES (@code, @script, @walletId) ON CONFLICT DO NOTHING"
+				"INSERT INTO wallets_scripts VALUES (@code, @script, @walletId) ON CONFLICT DO NOTHING"
 				, new { code = Network.CryptoCode, script = address.ScriptPubKey.ToHex(), addr = address.ScriptPubKey.GetDestinationAddress(Network.NBitcoinNetwork).ToString(), walletId });
 		}
 

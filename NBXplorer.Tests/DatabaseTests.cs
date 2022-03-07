@@ -31,72 +31,152 @@ namespace NBXplorer.Tests
 		public async Task CanCalculateUTXO()
 		{
 			await using var conn = await GetConnection();
-			await conn.CreateWallet("Alice");
-			await conn.AddWalletOutput("Alice", "t1", 10, "a1", 5);
-			await conn.AssertEmptyWallet("Alice");
+			await conn.ExecuteAsync(
+				"INSERT INTO wallets VALUES ('Alice');" +
+				"INSERT INTO scripts VALUES ('BTC', 'a1', '');" +
+				"INSERT INTO wallets_scripts (code, wallet_id, script) VALUES ('BTC', 'Alice', 'a1');" +
+				"INSERT INTO txs (code, tx_id, mempool) VALUES ('BTC', 't1', 't');" +
+				"INSERT INTO outs VALUES('BTC', 't1', 10, 'a1', 5); ");
+			Assert.Single(await conn.QueryAsync("SELECT * FROM wallets_utxos WHERE wallet_id='Alice'"));
 
-			await conn.ConfirmTx("b1", "t1");
+			await conn.ExecuteAsync(
+				"INSERT INTO blks VALUES ('BTC', 'b1', 0, 'b0');" +
+				"INSERT INTO txs_blks (code, tx_id, blk_id) VALUES ('BTC', 't1', 'b1')");
+
 			Assert.Equal("b1", conn.ExecuteScalar<string>("SELECT blk_id FROM txs WHERE tx_id='t1'"));
 
-			var utxo = Assert.Single(await conn.GetUTXOs("Alice"));
+			Assert.Single(await conn.QueryAsync("SELECT * FROM wallets_utxos WHERE wallet_id='Alice'"));
 
 			await conn.Orphan("b1");
+
 			Assert.Null(conn.ExecuteScalar<string>("SELECT blk_id FROM txs WHERE tx_id='t1'"));
 			await conn.ExecuteAsync("UPDATE blks SET confirmed='t'");
 			Assert.Equal("b1", conn.ExecuteScalar<string>("SELECT blk_id FROM txs WHERE tx_id='t1'"));
 			await conn.Orphan("b1");
-			await conn.AssertEmptyWallet("Alice");
-			await conn.ConfirmTx("b2", "t1");
 
-			utxo = Assert.Single(await conn.GetUTXOs("Alice"));
-			await conn.SpendOutput("t2", "t1", 10);
-			utxo = Assert.Single(await conn.GetUTXOs("Alice"));
-			await conn.ConfirmTx("b3", "t2");
+			var balance = conn.QuerySingle("SELECT * FROM wallets_balances WHERE wallet_id='Alice';");
+			Assert.Equal(0, balance.confirmed_balance);
 
-			await conn.AssertEmptyWallet("Alice");
+			await conn.ExecuteAsync(
+				"INSERT INTO blks VALUES ('BTC', 'b2', 0, 'b1');" +
+				"INSERT INTO txs_blks (code, tx_id, blk_id) VALUES ('BTC', 't1', 'b2')");
+
+			balance = conn.QuerySingle("SELECT * FROM wallets_balances WHERE wallet_id='Alice';");
+			Assert.Equal(5, balance.confirmed_balance);
+			Assert.Equal(5, balance.available_balance);
+
+			await conn.ExecuteAsync(
+				"INSERT INTO txs (code, tx_id, mempool) VALUES ('BTC', 't2', 't');" +
+				"INSERT INTO ins VALUES ('BTC', 't2', 0, 't1', 10);");
+
+			balance = conn.QuerySingle("SELECT * FROM wallets_balances WHERE wallet_id='Alice';");
+			Assert.Equal(5, balance.confirmed_balance);
+			Assert.Equal(0, balance.available_balance);
+
+			await conn.ExecuteAsync("UPDATE txs SET mempool='f' WHERE tx_id='t2'");
+
+			balance = conn.QuerySingle("SELECT * FROM wallets_balances WHERE wallet_id='Alice';");
+			Assert.Equal(5, balance.confirmed_balance);
+			Assert.Equal(5, balance.available_balance);
+
+			await conn.ExecuteAsync("UPDATE txs SET mempool='t', replaced_by='t1' WHERE tx_id='t2'");
+			balance = conn.QuerySingle("SELECT * FROM wallets_balances WHERE wallet_id='Alice';");
+			Assert.Equal(5, balance.confirmed_balance);
+			Assert.Equal(5, balance.available_balance);
+
+			await conn.ExecuteAsync(
+				"INSERT INTO blks VALUES ('BTC', 'b3', 0, 'b2');" +
+				"INSERT INTO txs_blks (code, tx_id, blk_id) VALUES ('BTC', 't2', 'b3')");
+
+			balance = conn.QuerySingle("SELECT * FROM wallets_balances WHERE wallet_id='Alice';");
+			Assert.Equal(0, balance.confirmed_balance);
+			Assert.Equal(0, balance.available_balance);
 			await conn.Orphan("b3");
 
-			utxo = Assert.Single(await conn.GetUTXOs("Alice"));
+			balance = conn.QuerySingle("SELECT * FROM wallets_balances WHERE wallet_id='Alice';");
+			Assert.Equal(5, balance.confirmed_balance);
+			Assert.Equal(0, balance.available_balance);
 		}
 
 		[Fact]
 		public async Task CanCalculateUTXO2()
 		{
 			await using var conn = await GetConnection();
-			await conn.CreateWallet("Alice");
-			await conn.CreateWallet("Bob");
+			await conn.ExecuteAsync(
+				"INSERT INTO wallets(wallet_id) VALUES ('Alice'), ('Bob');" +
+				"INSERT INTO scripts(code, script, addr) VALUES" +
+				"('BTC', 'alice1', '')," +
+				"('BTC', 'alice2', '')," +
+				"('BTC', 'alice3', '')," +
+				"('BTC', 'bob1', '')," +
+				"('BTC', 'bob2', '')," +
+				"('BTC', 'bob3', '');" +
+				"INSERT INTO wallets_scripts(code, wallet_id, script) VALUES " +
+				"('BTC', 'Alice', 'alice1')," +
+				"('BTC', 'Alice', 'alice2')," +
+				"('BTC', 'Alice', 'alice3')," +
+				"('BTC', 'Bob', 'bob1')," +
+				"('BTC', 'Bob', 'bob2')," +
+				"('BTC', 'Bob', 'bob3')");
+
 
 			// 1 coin to alice, 1 to bob
-			await conn.AddWalletOutput("Alice", "t1", 1, "alice1", 50);
-			await conn.AddWalletOutput("Bob", "t1", 2, "bob1", 40);
-			await conn.ConfirmTx("b1", "t1");
+			await conn.ExecuteAsync(
+				"INSERT INTO txs (code, tx_id) VALUES ('BTC', 't1'); " +
+				"INSERT INTO outs (code, tx_id, idx, script, value) VALUES " +
+				"('BTC', 't1', 1, 'alice1', 50), " +
+				"('BTC', 't1', 2, 'bob1', 40);" +
+				"INSERT INTO blks VALUES ('BTC', 'b1', 1, 'b0');" +
+				"INSERT INTO txs_blks (code, blk_id, tx_id) VALUES ('BTC', 'b1', 't1');");
 
 			// alice spend her coin, get change back, 2 outputs to bob
-			await conn.SpendOutput("t2", "t1", 1);
-			await conn.AddWalletOutput("Bob", "t2", 1, "bob2", 20);
-			await conn.AddWalletOutput("Bob", "t2", 2, "bob3", 39);
-			await conn.AddWalletOutput("Alice", "t2", 0, "alice2", 1);
-			await conn.ConfirmTx("b2", "t2");
+			await conn.ExecuteAsync(
+				"INSERT INTO txs (code, tx_id) VALUES ('BTC', 't2'); " +
+				"INSERT INTO ins VALUES ('BTC', 't2', 0, 't1', 1);" +
+				"INSERT INTO outs (code, tx_id, idx, script, value) VALUES " +
+				"('BTC', 't2', 0, 'bob2', 20), " +
+				"('BTC', 't2', 1, 'bob3', 39)," +
+				"('BTC', 't2', 2, 'alice2', 1);" +
+				"INSERT INTO blks VALUES ('BTC', 'b2', 2, 'b1');" +
+				"INSERT INTO txs_blks (code, blk_id, tx_id) VALUES ('BTC', 'b2', 't2');");
 
 			await AssertBalance(conn, "b2", "b1");
 
 			// Replayed on different block.
-			await conn.ConfirmTx("b1-2", "t1");
-			await conn.ConfirmTx("b2-2", "t2");
+			await conn.ExecuteAsync(
+				"INSERT INTO blks VALUES ('BTC', 'b1-2', 1, 'b0'), ('BTC', 'b2-2', 2, 'b1-2');" +
+				"INSERT INTO txs_blks (code, blk_id, tx_id) VALUES ('BTC', 'b1-2', 't1'), ('BTC', 'b2-2', 't2');");
 			await AssertBalance(conn, "b2-2", "b1-2");
 
 			// And again!
-			await conn.ConfirmTx("b1-3", "t1");
-			await conn.ConfirmTx("b2-3", "t2");
+			await conn.ExecuteAsync(
+				"INSERT INTO blks VALUES ('BTC', 'b1-3', 1, 'b0'), ('BTC', 'b2-3', 2, 'b1-3');" +
+				"INSERT INTO txs_blks (code, blk_id, tx_id) VALUES ('BTC', 'b1-3', 't1'), ('BTC', 'b2-3', 't2');");
 			await AssertBalance(conn, "b2-3", "b1-3");
 
-			await conn.ConfirmTx("b1-4", "t1");
-			await conn.ConfirmTx("b2-4", "t2");
+			// Let's test: If the outputs are double spent, then it should disappear from the wallet balance.
+			await conn.ExecuteAsync(
+				"INSERT INTO txs (code, tx_id) VALUES ('BTC', 'ds'); " +
+				"INSERT INTO ins VALUES " +
+				"('BTC', 'ds', 0, 't1', 1)," +
+				"('BTC', 'ds', 1, 't1', 2)," +
+				"('BTC', 'ds', 2, 't2', 0)," +
+				"('BTC', 'ds', 3, 't2', 1)," +
+				"('BTC', 'ds', 4, 't2', 2); " +
+				"INSERT INTO blks VALUES ('BTC', 'bs', 1, 'b0');" +
+				"INSERT INTO txs_blks (code, blk_id, tx_id) VALUES ('BTC', 'bs', 'ds');");
 
-			await conn.AddWalletOutput("Alice", "t3", 0, "alice3", 394);
-			await conn.ConfirmTx("b3-4", "t3");
+			var balance = await conn.QueryFirstOrDefaultAsync("SELECT * FROM wallets_balances WHERE wallet_id='Alice';");
+			Assert.Equal(0, balance.unconfirmed_balance);
+			Assert.Equal(0, balance.confirmed_balance);
+			Assert.Equal(0, balance.available_balance);
 
-			var row = await conn.QueryAsync("SELECT * FROM get_wallet_conf_utxos('BTC', 'Alice')");
+			balance = await conn.QueryFirstOrDefaultAsync("SELECT * FROM wallets_balances WHERE wallet_id='Bob';");
+			Assert.Equal(0, balance.unconfirmed_balance);
+			Assert.Equal(0, balance.confirmed_balance);
+			Assert.Equal(0, balance.available_balance);
+
+			Assert.Single(await conn.QueryAsync("SELECT * FROM txs WHERE tx_id='t2' AND mempool IS FALSE AND replaced_by='ds';"));
 		}
 
 		private static async Task AssertBalance(DbConnection conn, string b2, string b1)
@@ -104,20 +184,47 @@ namespace NBXplorer.Tests
 			// This will check that there is 4 utxo in total
 			// 3 for bobs, 1 for alice, then check what happen after
 			// orphaning b2 and b1
-			var utxos = await conn.GetUTXOs("Alice");
-			Assert.Single(utxos);
-			utxos = await conn.GetUTXOs("Bob");
-			Assert.Equal(3, utxos.Length);
+			Assert.Single(await conn.QueryAsync("SELECT * FROM wallets_utxos WHERE wallet_id='Alice' AND spending_tx_id IS NULL;"));
+			var utxos = (await conn.QueryAsync("SELECT * FROM wallets_utxos WHERE wallet_id='Bob' AND spending_tx_id IS NULL;")).ToList();
+			Assert.Equal(3, utxos.Count);
+
+			var balance = await conn.QueryFirstOrDefaultAsync("SELECT * FROM wallets_balances WHERE wallet_id='Alice';");
+			Assert.Equal(1, balance.unconfirmed_balance);
+			Assert.Equal(1, balance.confirmed_balance);
+			Assert.Equal(1, balance.available_balance);
+
+			balance = await conn.QueryFirstOrDefaultAsync("SELECT * FROM wallets_balances WHERE wallet_id='Bob';");
+			Assert.Equal(40 + 20 + 39, balance.unconfirmed_balance);
+			Assert.Equal(40 + 20 + 39, balance.confirmed_balance);
+			Assert.Equal(40 + 20 + 39, balance.available_balance);
+
 			await conn.Orphan(b2);
-			utxos = await conn.GetUTXOs("Alice");
-			Assert.Single(utxos);
-			//Assert.Equal(50, utxos[0].value);
-			utxos = await conn.GetUTXOs("Bob");
-			Assert.Single(utxos);
-			//Assert.Equal(40, utxos[0].value);
+
+			balance = await conn.QueryFirstOrDefaultAsync("SELECT * FROM wallets_balances WHERE wallet_id='Alice';");
+			Assert.Equal(1, balance.unconfirmed_balance);
+			Assert.Equal(50, balance.confirmed_balance);
+			Assert.Equal(1, balance.available_balance);
+
+			balance = await conn.QueryFirstOrDefaultAsync("SELECT * FROM wallets_balances WHERE wallet_id='Bob';");
+			Assert.Equal(40 + 20 + 39, balance.unconfirmed_balance);
+			Assert.Equal(40, balance.confirmed_balance);
+			Assert.Equal(40 + 20 + 39, balance.available_balance);
+
+			Assert.Single(await conn.QueryAsync("SELECT * FROM wallets_utxos WHERE wallet_id='Alice' AND spent_mempool IS FALSE AND immature IS FALSE;"));
+
 			await conn.Orphan(b1);
-			Assert.Empty(await conn.GetUTXOs("Bob"));
-			Assert.Empty(await conn.GetUTXOs("Alice"));
+
+			balance = await conn.QueryFirstOrDefaultAsync("SELECT * FROM wallets_balances WHERE wallet_id='Alice';");
+			Assert.Equal(1, balance.unconfirmed_balance);
+			Assert.Equal(0, balance.confirmed_balance);
+			Assert.Equal(1, balance.available_balance);
+
+			balance = await conn.QueryFirstOrDefaultAsync("SELECT * FROM wallets_balances WHERE wallet_id='Bob';");
+			Assert.Equal(40 + 20 + 39, balance.unconfirmed_balance);
+			Assert.Equal(0, balance.confirmed_balance);
+			Assert.Equal(40 + 20 + 39, balance.available_balance);
+
+			Assert.Empty(await conn.QueryAsync("SELECT * FROM wallets_utxos WHERE wallet_id='Alice' AND mempool IS FALSE;"));
 		}
 
 		[Fact]
@@ -158,13 +265,13 @@ namespace NBXplorer.Tests
 		}
 		public static async Task AssertEmptyWallet(this DbConnection db, string walletId)
 		{
-			Assert.Equal(0, await db.ExecuteScalarAsync<long>("SELECT COUNT(*) FROM get_wallet_conf_utxos('BTC', @wid)", new { wid = walletId }));
+			Assert.Empty(await GetUTXOs(db, walletId));
 		}
 
 		public record UTXORow(System.String code, System.String tx_id, System.Int32 idx, System.String script, System.Int64 value, System.String blk_id, System.Int64 height);
 		public static async Task<UTXORow[]> GetUTXOs(this DbConnection db, string walletId)
 		{
-			return (await db.QueryAsync<UTXORow>("SELECT code, tx_id, idx, script, value, blk_id, height FROM get_wallet_conf_utxos('BTC', @wid)", new { wid = walletId })).ToArray();
+			return (await db.QueryAsync<UTXORow>("SELECT code, tx_id, idx, script, value, blk_id, height FROM wallets_utxos WHERE code='BTC' AND wallet_id=@wid", new { wid = walletId })).ToArray();
 		}
 		public static async Task ConfirmTx(this DbConnection db, string block, string tx)
 		{
@@ -191,7 +298,7 @@ namespace NBXplorer.Tests
 			await CreateTransaction(db, tx);
 			await AddOutput(db, tx, index, scriptpubkey, val);
 			await CreateWallet(db, walletId);
-			await db.ExecuteAsync("INSERT INTO scripts_wallets VALUES ('BTC', @script, @wallet_id) ON CONFLICT DO NOTHING", new { wallet_id = walletId, script = scriptpubkey });
+			await db.ExecuteAsync("INSERT INTO wallets_scripts VALUES ('BTC', @script, @wallet_id) ON CONFLICT DO NOTHING", new { wallet_id = walletId, script = scriptpubkey });
 		}
 
 		static async Task CreateTransaction(this DbConnection db, string tx)

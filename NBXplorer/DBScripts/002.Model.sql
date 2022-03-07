@@ -14,30 +14,59 @@ CREATE TABLE IF NOT EXISTS txs (
   raw BYTEA DEFAULT NULL,
   blk_id TEXT DEFAULT NULL,
   blk_idx INT DEFAULT NULL,
+  mempool BOOLEAN DEFAULT 't',
+  replaced_by TEXT DEFAULT NULL,
   seen_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
  /*  PRIMARY KEY (code, tx_id) Handled by index below , */
+ /*  FOREIGN KEY (code, replaced_by) REFERENCES txs ON DELETE SET NULL, */
   FOREIGN KEY (code, blk_id) REFERENCES blks ON DELETE SET NULL);
 
+CREATE UNIQUE INDEX IF NOT EXISTS txs_pkey ON txs (code, tx_id) INCLUDE (blk_id, mempool, replaced_by);
+
 ALTER TABLE txs DROP CONSTRAINT IF EXISTS txs_pkey CASCADE;
-CREATE UNIQUE INDEX IF NOT EXISTS txs_pkey ON txs (code, tx_id) INCLUDE (blk_id);
 ALTER TABLE txs ADD CONSTRAINT txs_pkey PRIMARY KEY USING INDEX txs_pkey;
 
-CREATE INDEX IF NOT EXISTS txs_unconf ON txs (code) INCLUDE (tx_id) WHERE blk_id IS NULL;
+ALTER TABLE txs DROP CONSTRAINT IF EXISTS txs_code_replaced_by_fkey CASCADE;
+ALTER TABLE txs ADD CONSTRAINT txs_code_replaced_by_fkey FOREIGN KEY (code, replaced_by) REFERENCES txs (code, tx_id) ON DELETE SET NULL;
+
+CREATE INDEX IF NOT EXISTS txs_unconf_idx ON txs (code) INCLUDE (tx_id) WHERE mempool = 't';
 
 -- If the blks confirmation state change, set tx.blk_id accordingly
+CREATE OR REPLACE PROCEDURE set_txs_confirmed(in_code TEXT, in_blk_id TEXT)
+AS $$
+DECLARE
+	r RECORD;
+BEGIN
+	
+	FOR r IN SELECT tx_id, blk_idx
+			 FROM txs_blks
+			 WHERE code=in_code AND blk_id=in_blk_id
+	LOOP
+		UPDATE txs t
+		SET blk_id=in_blk_id, blk_idx=r.blk_idx, mempool='f', replaced_by=NULL
+		WHERE t.code=in_code AND t.tx_id=r.tx_id;
+		
+		UPDATE txs t
+		SET mempool='f', replaced_by=r.tx_id
+		WHERE t.code=in_code AND mempool='t' AND EXISTS (
+			SELECT spent_tx_id, spent_idx FROM ins i1
+			JOIN ins i2 USING (code, spent_tx_id, spent_idx)
+			WHERE code=in_code AND i1.input_tx_id=t.tx_id AND i2.input_tx_id = r.tx_id
+		);
+	END LOOP;
+END;
+$$ LANGUAGE plpgsql;
+
 CREATE OR REPLACE FUNCTION set_tx_blk_id()
   RETURNS TRIGGER 
   LANGUAGE PLPGSQL
 AS $$
 BEGIN
 	IF NEW.confirmed THEN
-	  UPDATE txs t 
-	  SET blk_id=NEW.blk_id, blk_idx=q.blk_idx
-	  FROM (SELECT tb.tx_id, tb.blk_idx FROM txs_blks tb WHERE code=NEW.code AND blk_id=NEW.blk_id) AS q  
-	  WHERE t.code=NEW.code AND t.tx_id=q.tx_id;
+	  CALL set_txs_confirmed(NEW.code, NEW.blk_id);
 	ELSE
 	  UPDATE txs t 
-	  SET blk_id=NULL, blk_idx=NULL
+	  SET blk_id=NULL, blk_idx=NULL, mempool='t'
 	  FROM (SELECT tb.tx_id FROM txs_blks tb WHERE code=NEW.code AND blk_id=NEW.blk_id) AS q  
 	  WHERE t.code=NEW.code AND t.tx_id=q.tx_id AND t.blk_id=NEW.blk_id;
 	END IF;
@@ -66,13 +95,10 @@ CREATE OR REPLACE FUNCTION set_tx_blk_id2()
 AS $$
 BEGIN
 	IF EXISTS (SELECT b.blk_id FROM blks b WHERE b.code=NEW.code AND b.blk_id=NEW.blk_id AND b.confirmed='t') THEN
-	  UPDATE txs t 
-	  SET blk_id=NEW.blk_id, blk_idx=NEW.blk_idx
-	  FROM (SELECT tb.tx_id FROM txs_blks tb WHERE code=NEW.code AND blk_id=NEW.blk_id) AS q  
-	  WHERE t.code=NEW.code AND t.tx_id=q.tx_id;
+	  CALL set_txs_confirmed(NEW.code, NEW.blk_id);
 	ELSE
 	  UPDATE txs t 
-	  SET blk_id=NULL, blk_idx=NULL
+	  SET blk_id=NULL, blk_idx=NULL, mempool='t'
 	  FROM (SELECT tb.tx_id FROM txs_blks tb WHERE code=NEW.code AND blk_id=NEW.blk_id) AS q  
 	  WHERE t.code=NEW.code AND t.tx_id=q.tx_id AND t.blk_id=NEW.blk_id;
 	END IF;
@@ -174,7 +200,7 @@ CREATE TABLE IF NOT EXISTS wallets (
   wallet_id TEXT NOT NULL PRIMARY KEY,
   created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP);
 
-CREATE TABLE IF NOT EXISTS scripts_wallets (
+CREATE TABLE IF NOT EXISTS wallets_scripts (
 code TEXT NOT NULL,
 script TEXT NOT NULL,
 wallet_id TEXT NOT NULL REFERENCES wallets ON DELETE CASCADE,
@@ -207,53 +233,28 @@ CREATE TABLE IF NOT EXISTS evts (
 CREATE INDEX IF NOT EXISTS evts_id ON evts (id DESC);
 CREATE INDEX IF NOT EXISTS evts_code_id ON evts (code, id DESC);
 
-CREATE OR REPLACE VIEW conf_utxos AS
-SELECT o.*, ob.blk_id, ob.height FROM outs o
-INNER JOIN txs txo USING (code, tx_id)
-INNER JOIN blks ob USING (code, blk_id)
-LEFT JOIN ins i ON o.code = i.code AND o.tx_id = i.spent_tx_id AND o.idx = i.spent_idx
-LEFT JOIN txs ti ON o.code = ti.code AND i.input_tx_id = ti.tx_id
-WHERE txo.blk_id IS NOT NULL AND ti.blk_id IS NULL;
-
-CREATE OR REPLACE VIEW unconf_txs AS
-SELECT t.code, t.tx_id FROM txs t
-WHERE t.blk_id IS NULL;
-
-CREATE OR REPLACE FUNCTION get_wallet_conf_utxos(in_code TEXT, in_wallet_id TEXT)
-RETURNS TABLE (code TEXT, tx_id TEXT, idx INTEGER, script TEXT, value BIGINT, immature BOOLEAN, blk_id TEXT, height BIGINT) AS $$
-  SELECT cu.code, cu.tx_id, cu.idx, cu.script, cu.value, cu.immature, cu.blk_id, cu.height
-  FROM (SELECT ds.script
-  FROM descriptors_wallets dw
-  INNER JOIN descriptors_scripts ds ON dw.code = ds.code AND dw.descriptor = ds.descriptor
-  WHERE dw.code = in_code AND dw.wallet_id=in_wallet_id
-  UNION
-  SELECT sw.script
-  FROM scripts_wallets sw
-  WHERE sw.code = in_code AND sw.wallet_id=in_wallet_id) s
-  INNER JOIN conf_utxos cu ON in_code=cu.code AND s.script=cu.script
-$$  LANGUAGE SQL STABLE;
-
-
 CREATE OR REPLACE VIEW tracked_scripts AS
 SELECT s.code, s.script, s.addr, dw.wallet_id, 'DESCRIPTOR' source, ds.descriptor, ds.keypath, ds.idx
 FROM descriptors_scripts ds
 INNER JOIN scripts s USING (code, script)
 INNER JOIN descriptors_wallets dw USING (code, descriptor)
 UNION ALL
-SELECT s.code, s.script, s.addr, sw.wallet_id, 'EXPLICIT' source, NULL, NULL, NULL
-FROM scripts_wallets sw
+SELECT s.code, s.script, s.addr, ws.wallet_id, 'EXPLICIT' source, NULL, NULL, NULL
+FROM wallets_scripts ws
 INNER JOIN scripts s USING (code, script);
 
 
 CREATE OR REPLACE VIEW ins_outs AS
-SELECT o.code, o.tx_id, t.blk_id, 'OUTPUT' source, o.tx_id out_tx_id, o.idx, o.script, o.value, o.immature, t.seen_at
+SELECT * FROM 
+(SELECT o.code, o.tx_id, t.blk_id, 'OUTPUT' source, o.tx_id out_tx_id, o.idx, o.script, o.value, o.immature, t.mempool, t.replaced_by, t.seen_at
 FROM outs o
 JOIN txs t USING (code, tx_id)
 UNION ALL
-SELECT i.code, i.input_tx_id tx_id, t.blk_id, 'INPUT', i.spent_tx_id out_tx_id, i.spent_idx, o.script, o.value, 'f', t.seen_at
+SELECT i.code, i.input_tx_id tx_id, t.blk_id, 'INPUT', i.spent_tx_id out_tx_id, i.spent_idx, o.script, o.value, 'f', t.mempool, t.replaced_by, t.seen_at
 FROM ins i
 JOIN outs o ON i.code=o.code AND i.spent_tx_id=o.tx_id AND i.spent_idx=o.idx
-JOIN txs t ON i.code=t.code AND i.input_tx_id=t.tx_id;
+JOIN txs t ON i.code=t.code AND i.input_tx_id=t.tx_id) q
+WHERE (blk_id IS NOT NULL OR (mempool IS TRUE AND replaced_by IS NULL));
 
 -- We could replace this with a simple UPDATE, but it doesn't take the right index.
 -- In practice, this function will rarely modify any data, this make sure the index outs_code_immature is used.
@@ -277,3 +278,48 @@ BEGIN
   RETURN rowUpdated;
 END
 $BODY$  LANGUAGE plpgsql;
+
+
+-- Returns current UTXOs
+-- Warning: It also returns the UTXO that are confirmed but spent in the mempool, as well as immature utxos.
+--          If you want the available UTXOs which can be spent use 'WHERE spent_mempool IS FALSE AND immature IS FALSE'.
+
+CREATE OR REPLACE VIEW utxos AS
+WITH current_ins AS
+(
+	SELECT i.*, ti.mempool FROM ins i
+	JOIN txs ti ON i.code = ti.code AND i.input_tx_id = ti.tx_id
+	WHERE ti.blk_id IS NOT NULL OR (ti.mempool IS TRUE AND ti.replaced_by IS NULL)
+)
+SELECT o.*, ob.blk_id, ob.height, i.input_tx_id spending_tx_id, i.input_idx spending_idx, txo.mempool mempool, (i.mempool IS TRUE) spent_mempool FROM outs o
+JOIN txs txo USING (code, tx_id)
+LEFT JOIN blks ob USING (code, blk_id)
+LEFT JOIN current_ins i ON o.code = i.code AND o.tx_id = i.spent_tx_id AND o.idx = i.spent_idx
+WHERE (txo.blk_id IS NOT NULL OR (txo.mempool IS TRUE AND txo.replaced_by IS NULL)) AND
+	  (i.input_tx_id IS NULL OR i.mempool IS TRUE);
+
+CREATE OR REPLACE VIEW wallets_utxos AS
+SELECT s.wallet_id, u.*
+FROM (SELECT dw.wallet_id, dw.code, ds.script
+FROM descriptors_wallets dw
+INNER JOIN descriptors_scripts ds ON dw.code = ds.code AND dw.descriptor = ds.descriptor
+UNION
+SELECT ws.wallet_id, ws.code, ws.script
+FROM wallets_scripts ws) s
+INNER JOIN utxos u ON s.code=u.code AND s.script=u.script;
+
+CREATE OR REPLACE VIEW wallets_balances AS
+WITH b AS (SELECT
+	wallet_id,
+	SUM(value) FILTER (WHERE spent_mempool IS FALSE) unconfirmed_balance,
+	SUM(value) FILTER (WHERE blk_id IS NOT NULL) confirmed_balance,
+	SUM(value) FILTER (WHERE spent_mempool IS FALSE AND immature IS FALSE) available_balance
+FROM wallets_utxos
+GROUP BY wallet_id)
+SELECT
+  wallet_id,
+  COALESCE(unconfirmed_balance, 0) unconfirmed_balance,
+  COALESCE(confirmed_balance, 0) confirmed_balance,
+  COALESCE(available_balance, 0) available_balance
+FROM wallets
+LEFT JOIN b USING (wallet_id);
