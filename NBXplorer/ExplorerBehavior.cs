@@ -225,6 +225,7 @@ namespace NBXplorer
 		private async Task SaveMatches(TrackedTransaction[] matches, uint256 blockHash, DateTimeOffset now, bool fireEvents)
 		{
 			await Repository.SaveMatches(matches);
+			await Repository.NewBlockCommit();
 			_ = AddressPoolService.GenerateAddresses(Network, matches);
 			var saved = await Repository.SaveTransactions(now, matches.Select(m => m.Transaction).Distinct().ToArray(), blockHash);
 			var savedTransactions = saved.ToDictionary(s => s.Transaction.GetHash());

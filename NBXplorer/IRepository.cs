@@ -49,5 +49,6 @@ namespace NBXplorer
 		Task Track(IDestination address);
 		ValueTask<int> TrimmingEvents(int maxEvents, CancellationToken cancellationToken = default);
 		Task NewBlock(SlimChainedBlock block);
+		Task NewBlockCommit();
 	}
 }

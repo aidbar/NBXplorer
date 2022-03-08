@@ -27,7 +27,7 @@ namespace NBXplorer.Controllers
 {
 	[Route("v1")]
 	[Authorize]
-	public partial class MainController : Controller
+	public partial class MainController : ControllerBase
 	{
 		JsonSerializerSettings _SerializerSettings;
 		public MainController(
@@ -41,8 +41,9 @@ namespace NBXplorer.Controllers
 			RebroadcasterHostedService rebroadcaster,
 			KeyPathTemplates keyPathTemplates,
 			MvcNewtonsoftJsonOptions jsonOptions,
+			NBXplorerNetworkProvider networkProvider,
 			Analytics.FingerprintHostedService fingerprintService
-			)
+			): base(networkProvider, waiters)
 		{
 			ExplorerConfiguration = explorerConfiguration;
 			RepositoryProvider = repositoryProvider;
@@ -50,7 +51,6 @@ namespace NBXplorer.Controllers
 			_SerializerSettings = jsonOptions.SerializerSettings;
 			_EventAggregator = eventAggregator;
 			ScanUTXOSetService = scanUTXOSetService.Instance;
-			Waiters = waiters;
 			Rebroadcaster = rebroadcaster;
 			this.keyPathTemplates = keyPathTemplates;
 			this.fingerprintService = fingerprintService;
@@ -60,10 +60,6 @@ namespace NBXplorer.Controllers
 		private readonly KeyPathTemplates keyPathTemplates;
 		private readonly FingerprintHostedService fingerprintService;
 
-		public BitcoinDWaiters Waiters
-		{
-			get; set;
-		}
 		public RebroadcasterHostedService Rebroadcaster { get; }
 		public AddressPoolService AddressPoolService
 		{
@@ -292,24 +288,6 @@ namespace NBXplorer.Controllers
 				}
 			}
 			return Json(status, network.Serializer.Settings);
-		}
-
-		private NBXplorerNetwork GetNetwork(string cryptoCode, bool checkRPC)
-		{
-			if (cryptoCode == null)
-				throw new ArgumentNullException(nameof(cryptoCode));
-			cryptoCode = cryptoCode.ToUpperInvariant();
-			var network = Waiters.GetWaiter(cryptoCode)?.Network;
-			if (network == null)
-				throw new NBXplorerException(new NBXplorerError(404, "cryptoCode-not-supported", $"{cryptoCode} is not supported"));
-
-			if (checkRPC)
-			{
-				var waiter = Waiters.GetWaiter(network);
-				if (waiter == null || !waiter.RPCAvailable || waiter.RPC.Capabilities == null)
-					throw new NBXplorerError(400, "rpc-unavailable", $"The RPC interface is currently not available.").AsException();
-			}
-			return network;
 		}
 
 		[HttpGet]
@@ -567,16 +545,6 @@ namespace NBXplorer.Controllers
 				}
 			}
 			return null;
-		}
-
-		private static TrackedSource GetTrackedSource(DerivationStrategyBase derivationScheme, BitcoinAddress address)
-		{
-			TrackedSource trackedSource = null;
-			if (address != null)
-				trackedSource = new AddressTrackedSource(address);
-			if (derivationScheme != null)
-				trackedSource = new DerivationSchemeTrackedSource(derivationScheme);
-			return trackedSource;
 		}
 
 		[HttpGet]
@@ -860,6 +828,7 @@ namespace NBXplorer.Controllers
 		[HttpGet]
 		[Route("cryptos/{cryptoCode}/derivations/{derivationScheme}/balance")]
 		[Route("cryptos/{cryptoCode}/addresses/{address}/balance")]
+		[PostgresImplementationActionConstraint(false)]
 		public async Task<IActionResult> GetBalance(string cryptoCode,
 			[ModelBinder(BinderType = typeof(DerivationStrategyModelBinder))]
 			DerivationStrategyBase derivationScheme,

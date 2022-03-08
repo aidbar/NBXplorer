@@ -245,9 +245,17 @@ namespace NBXplorer
 
 		record ScriptPubKeyQuery(string code, string id);
 
-		public Task<TrackedTransaction[]> GetMatches(Block block, uint256 blockId, DateTimeOffset now, bool useCache)
+		public async Task<TrackedTransaction[]> GetMatches(Block block, uint256 blockId, DateTimeOffset now, bool useCache)
 		{
-			return GetMatches(block.Transactions, blockId, now, useCache);
+			var matches = await GetMatches(block.Transactions, blockId, now, useCache);
+			if (matches.Length > 0)
+			{
+				var blockIndexes = block.Transactions.Select((tx, i) => (tx, i))
+								  .ToDictionary(o => o.tx.GetHash(), o => o.i);
+				foreach (var match in matches)
+					match.BlockIndex = blockIndexes[match.TransactionHash];
+			}
+			return matches;
 		}
 
 		public async Task<TrackedTransaction[]> GetMatches(IList<Transaction> txs, uint256 blockId, DateTimeOffset now, bool useCache)
@@ -582,12 +590,9 @@ namespace NBXplorer
 				return;
 			await using var helper = await connectionFactory.CreateConnectionHelper(Network);
 			var connection = helper.Connection;
-			bool hasBlock = false;
 			await helper.SaveTransactions(transactions.Select(t => (t.Transaction, t.TransactionHash, t.BlockHash, t.BlockIndex)), null);
 			foreach (var tx in transactions)
 			{
-				if (tx.BlockHash is not null)
-					hasBlock = true;
 				var outs = tx.GetReceivedOutputs()
 					.Select(received =>
 					new
@@ -615,15 +620,6 @@ namespace NBXplorer
 					"SELECT i.* FROM (VALUES (@code, @input_tx_id, @input_idx, @spent_tx_id, @spent_idx)) i " +
 					"WHERE EXISTS (SELECT FROM outs WHERE code = @code AND tx_id = @spent_tx_id AND idx = @spent_idx) FOR SHARE " +
 					"ON CONFLICT DO NOTHING", ins);
-			}
-			if (hasBlock)
-			{
-				await connection.ExecuteAsync("CALL new_block_updated(@code, @maturity)",
-					new
-					{
-						code = Network.CryptoCode,
-						maturity = Network.NBitcoinNetwork.Consensus.CoinbaseMaturity
-					});
 			}
 		}
 
@@ -735,6 +731,17 @@ namespace NBXplorer
 			};
 			await conn.Connection.ExecuteAsync(
 				"INSERT INTO blks VALUES (@code, @id, @height, @prev) ON CONFLICT (code, blk_id) DO UPDATE SET confirmed='t';", parameters);
+		}
+
+		public async Task NewBlockCommit()
+		{
+			await using var conn = await GetConnection();
+			await conn.Connection.ExecuteAsync("CALL new_block_updated(@code, @maturity)",
+				new
+				{
+					code = Network.CryptoCode,
+					maturity = Network.NBitcoinNetwork.Consensus.CoinbaseMaturity
+				});
 		}
 	}
 }

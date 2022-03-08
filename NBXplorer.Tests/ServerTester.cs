@@ -233,7 +233,10 @@ namespace NBXplorer.Tests
 		{
 			Host.Dispose();
 			if (deleteAll)
+			{
+				PostgresConnectionString = null;
 				DeleteFolderRecursive(datadir);
+			}
 			StartNBXplorer();
 			this.Client.WaitServerStarted();
 		}

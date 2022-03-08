@@ -52,11 +52,11 @@ BEGIN
 
 	-- Turn mempool flag of confirmed txs to false
 	WITH q AS (
-	SELECT t.code, t.tx_id, b.blk_id FROM txs t
+	SELECT t.code, t.tx_id, b.blk_id, tb.blk_idx FROM txs t
 	JOIN txs_blks tb USING (code, tx_id)
 	JOIN blks b ON b.code=tb.code AND b.blk_id=tb.blk_id
 	WHERE t.code=in_code AND mempool IS TRUE AND b.confirmed IS TRUE)
-	UPDATE txs t SET mempool='f', replaced_by=NULL, blk_id=q.blk_id
+	UPDATE txs t SET mempool='f', replaced_by=NULL, blk_id=q.blk_id, blk_idx=q.blk_idx
 	FROM q
 	WHERE t.code=q.code AND t.tx_id=q.tx_id;
 
@@ -104,7 +104,7 @@ BEGIN
 	JOIN blks b ON b.code=tb.code AND b.blk_id=tb.blk_id
 	WHERE t.code=in_code AND b.height >= in_height AND b.confirmed IS TRUE AND t.mempool IS FALSE)
 	UPDATE txs t
-	SET mempool='t', blk_id=NULL
+	SET mempool='t', blk_id=NULL, blk_idx=NULL
 	FROM q
 	WHERE q.code=t.code AND q.tx_id=t.tx_id;
 
@@ -321,6 +321,7 @@ SELECT
 	wallet_id,
 	COALESCE(SUM(value) FILTER (WHERE spent_mempool IS FALSE), 0) unconfirmed_balance,
 	COALESCE(SUM(value) FILTER (WHERE blk_id IS NOT NULL), 0) confirmed_balance,
-	COALESCE(SUM(value) FILTER (WHERE spent_mempool IS FALSE AND immature IS FALSE), 0) available_balance
+	COALESCE(SUM(value) FILTER (WHERE spent_mempool IS FALSE AND immature IS FALSE), 0) available_balance,
+	COALESCE(SUM(value) FILTER (WHERE immature IS TRUE), 0) immature_balance
 FROM wallets_utxos
 GROUP BY wallet_id;
