@@ -29,57 +29,81 @@ ALTER TABLE txs ADD CONSTRAINT txs_pkey PRIMARY KEY USING INDEX txs_pkey;
 ALTER TABLE txs DROP CONSTRAINT IF EXISTS txs_code_replaced_by_fkey CASCADE;
 ALTER TABLE txs ADD CONSTRAINT txs_code_replaced_by_fkey FOREIGN KEY (code, replaced_by) REFERENCES txs (code, tx_id) ON DELETE SET NULL;
 
-CREATE INDEX IF NOT EXISTS txs_unconf_idx ON txs (code) INCLUDE (tx_id) WHERE mempool = 't';
+CREATE INDEX IF NOT EXISTS txs_unconf_idx ON txs (code) INCLUDE (tx_id) WHERE mempool IS TRUE;
 
--- If the blks confirmation state change, set tx.blk_id accordingly
-CREATE OR REPLACE PROCEDURE set_txs_confirmed(in_code TEXT, in_blk_id TEXT)
+-- Update outs.immature, txs.mempool and txs.replaced_by when a new block comes
+CREATE OR REPLACE PROCEDURE new_block_updated(in_code TEXT, maturity_height INT)
 AS $$
 DECLARE
-	r RECORD;
 BEGIN
-	
-	FOR r IN SELECT tx_id, blk_idx
-			 FROM txs_blks
-			 WHERE code=in_code AND blk_id=in_blk_id
-	LOOP
-		UPDATE txs t
-		SET blk_id=in_blk_id, blk_idx=r.blk_idx, mempool='f', replaced_by=NULL
-		WHERE t.code=in_code AND t.tx_id=r.tx_id;
-		
-		UPDATE txs t
-		SET mempool='f', replaced_by=r.tx_id
-		WHERE t.code=in_code AND mempool='t' AND EXISTS (
-			SELECT spent_tx_id, spent_idx FROM ins i1
-			JOIN ins i2 USING (code, spent_tx_id, spent_idx)
-			WHERE code=in_code AND i1.input_tx_id=t.tx_id AND i2.input_tx_id = r.tx_id
-		);
-	END LOOP;
+	-- Turn immature flag of outputs to mature
+	-- Note that we never set the outputs back to immature, even in reorg
+	-- But that's such a corner case that we don't care.
+	WITH q AS (
+	  SELECT o.code, o.tx_id, o.idx FROM outs o
+	  JOIN txs t USING (code, tx_id)
+	  JOIN blks b ON b.code=o.code AND b.blk_id=t.blk_id
+	  WHERE o.code=in_code AND o.immature='t' AND b.height < maturity_height
+	)
+	UPDATE outs o SET immature='f' 
+	FROM q
+	WHERE o.code=q.code AND o.tx_id=q.tx_id AND o.idx=q.idx;
+
+	-- Turn mempool flag of confirmed txs to false
+	WITH q AS (
+	SELECT t.code, t.tx_id, b.blk_id FROM txs t
+	JOIN txs_blks tb USING (code, tx_id)
+	JOIN blks b ON b.code=tb.code AND b.blk_id=tb.blk_id
+	WHERE t.code=in_code AND mempool IS TRUE AND b.confirmed IS TRUE)
+	UPDATE txs t SET mempool='f', replaced_by=NULL, blk_id=q.blk_id
+	FROM q
+	WHERE t.code=q.code AND t.tx_id=q.tx_id;
+
+	-- Turn mempool flag of txs with inputs spent by confirmed blocks to false
+	WITH q AS (
+	SELECT mempool_ins.code, mempool_ins.tx_id mempool_tx_id, confirmed_ins.tx_id confirmed_tx_id
+	FROM 
+	  (SELECT i.code, i.spent_tx_id, t.tx_id FROM ins i
+	  JOIN txs t ON t.code=i.code AND t.tx_id=i.input_tx_id
+	  WHERE i.code=in_code AND t.mempool IS TRUE) mempool_ins
+	LEFT JOIN (
+	  SELECT i.code, i.spent_tx_id, t.tx_id FROM ins i
+	  JOIN txs t ON t.code=i.code AND t.tx_id=i.input_tx_id
+	  WHERE i.code=in_code AND t.blk_id IS NOT NULL
+	) confirmed_ins USING (code, spent_tx_id)
+	WHERE confirmed_ins.tx_id IS NOT NULL)
+	UPDATE txs t SET mempool='f', replaced_by=q.confirmed_tx_id
+	FROM q
+	WHERE t.code=q.code AND t.tx_id=q.mempool_tx_id;
+
 END;
 $$ LANGUAGE plpgsql;
 
-CREATE OR REPLACE FUNCTION set_tx_blk_id()
-  RETURNS TRIGGER 
-  LANGUAGE PLPGSQL
+-- Orphan blocks at `in_height` or above.
+-- This bring back orphaned transactions in mempool
+CREATE OR REPLACE PROCEDURE orphan_blocks(in_code TEXT, in_height BIGINT)
 AS $$
+DECLARE
 BEGIN
-	IF NEW.confirmed THEN
-	  CALL set_txs_confirmed(NEW.code, NEW.blk_id);
-	ELSE
-	  UPDATE txs t 
-	  SET blk_id=NULL, blk_idx=NULL, mempool='t'
-	  FROM (SELECT tb.tx_id FROM txs_blks tb WHERE code=NEW.code AND blk_id=NEW.blk_id) AS q  
-	  WHERE t.code=NEW.code AND t.tx_id=q.tx_id AND t.blk_id=NEW.blk_id;
-	END IF;
-	RETURN NEW;
+	-- Set mempool flags of the txs in the blocks back to true
+	WITH q AS (
+	SELECT t.code, t.tx_id FROM txs t
+	JOIN txs_blks tb USING (code, tx_id)
+	JOIN blks b ON b.code=tb.code AND b.blk_id=tb.blk_id
+	WHERE t.code=in_code AND b.height >= in_height AND b.confirmed IS TRUE AND t.mempool IS FALSE)
+	UPDATE txs t
+	SET mempool='t', blk_id=NULL
+	FROM q
+	WHERE q.code=t.code AND q.tx_id=t.tx_id;
+
+	-- Set confirmed flags of blks to false
+	UPDATE blks
+	SET confirmed='f'
+	WHERE height >= in_height;
 END;
-$$;
-
-DROP TRIGGER IF EXISTS blks_tx_blk_id on blks;
-CREATE TRIGGER blks_tx_blk_id AFTER UPDATE ON blks FOR EACH ROW EXECUTE PROCEDURE set_tx_blk_id();
---------------------
+$$ LANGUAGE plpgsql;
 
 
--- If the a txs get added to a block, update the mempool flag of the txs
 CREATE TABLE IF NOT EXISTS txs_blks (
   code TEXT NOT NULL,
   tx_id TEXT NOT NULL,
@@ -88,25 +112,6 @@ CREATE TABLE IF NOT EXISTS txs_blks (
   PRIMARY KEY(code, tx_id, blk_id),
   FOREIGN KEY(code, tx_id) REFERENCES txs ON DELETE CASCADE,
   FOREIGN KEY(code, blk_id) REFERENCES blks ON DELETE CASCADE);
-
-CREATE OR REPLACE FUNCTION set_tx_blk_id2()
-  RETURNS TRIGGER 
-  LANGUAGE PLPGSQL
-AS $$
-BEGIN
-	IF EXISTS (SELECT b.blk_id FROM blks b WHERE b.code=NEW.code AND b.blk_id=NEW.blk_id AND b.confirmed='t') THEN
-	  CALL set_txs_confirmed(NEW.code, NEW.blk_id);
-	ELSE
-	  UPDATE txs t 
-	  SET blk_id=NULL, blk_idx=NULL, mempool='t'
-	  FROM (SELECT tb.tx_id FROM txs_blks tb WHERE code=NEW.code AND blk_id=NEW.blk_id) AS q  
-	  WHERE t.code=NEW.code AND t.tx_id=q.tx_id AND t.blk_id=NEW.blk_id;
-	END IF;
-	RETURN NEW;
-END;
-$$;
-DROP TRIGGER IF EXISTS txs_blks_blk_id on txs_blks;
-CREATE TRIGGER txs_blks_blk_id AFTER INSERT ON txs_blks FOR EACH ROW EXECUTE PROCEDURE set_tx_blk_id2();
 
 
 CREATE TABLE IF NOT EXISTS scripts (
@@ -309,17 +314,10 @@ FROM wallets_scripts ws) s
 INNER JOIN utxos u ON s.code=u.code AND s.script=u.script;
 
 CREATE OR REPLACE VIEW wallets_balances AS
-WITH b AS (SELECT
-	wallet_id,
-	SUM(value) FILTER (WHERE spent_mempool IS FALSE) unconfirmed_balance,
-	SUM(value) FILTER (WHERE blk_id IS NOT NULL) confirmed_balance,
-	SUM(value) FILTER (WHERE spent_mempool IS FALSE AND immature IS FALSE) available_balance
-FROM wallets_utxos
-GROUP BY wallet_id)
 SELECT
-  wallet_id,
-  COALESCE(unconfirmed_balance, 0) unconfirmed_balance,
-  COALESCE(confirmed_balance, 0) confirmed_balance,
-  COALESCE(available_balance, 0) available_balance
-FROM wallets
-LEFT JOIN b USING (wallet_id);
+	wallet_id,
+	COALESCE(SUM(value) FILTER (WHERE spent_mempool IS FALSE), 0) unconfirmed_balance,
+	COALESCE(SUM(value) FILTER (WHERE blk_id IS NOT NULL), 0) confirmed_balance,
+	COALESCE(SUM(value) FILTER (WHERE spent_mempool IS FALSE AND immature IS FALSE), 0) available_balance
+FROM wallets_utxos
+GROUP BY wallet_id;
