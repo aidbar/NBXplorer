@@ -30,6 +30,7 @@ namespace NBXplorer.Tests
 		public ITestOutputHelper Logs { get; }
 
 		[Fact]
+		[Trait("Benchmark", "Benchmark")]
 		public async Task BenchmarkDatabase()
 		{
 			await using var conn = await GetConnection();
