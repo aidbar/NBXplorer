@@ -231,6 +231,7 @@ CREATE TABLE IF NOT EXISTS wallets (
   wallet_id TEXT NOT NULL PRIMARY KEY,
   created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP);
 
+-- A wallet can track a specific script, add those to this table
 CREATE TABLE IF NOT EXISTS wallets_scripts (
 code TEXT NOT NULL,
 script TEXT NOT NULL,
@@ -246,24 +247,7 @@ PRIMARY KEY (code, descriptor, wallet_id),
 FOREIGN KEY (code, descriptor) REFERENCES descriptors ON DELETE CASCADE
 );
 
-CREATE TABLE IF NOT EXISTS wallet_metadata (
-wallet_id TEXT NOT NULL REFERENCES wallets ON DELETE CASCADE,
-key TEXT NOT NULL,
-data JSONB NOT NULL,
-PRIMARY KEY (wallet_id, key)
-);
-
-CREATE TABLE IF NOT EXISTS evts (
-  id SERIAL NOT NULL PRIMARY KEY,
-  code TEXT NOT NULL,
-  type TEXT NOT NULL,
-  data JSONB NOT NULL,
-  created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE INDEX IF NOT EXISTS evts_id ON evts (id DESC);
-CREATE INDEX IF NOT EXISTS evts_code_id ON evts (code, id DESC);
-
+-- Returns the scripts along with the wallet_id tracking them
 CREATE OR REPLACE VIEW tracked_scripts AS
 SELECT s.code, s.script, s.addr, dw.wallet_id, 'DESCRIPTOR' source, ds.descriptor, ds.keypath, ds.idx
 FROM descriptors_scripts ds
@@ -274,7 +258,7 @@ SELECT s.code, s.script, s.addr, ws.wallet_id, 'EXPLICIT' source, NULL, NULL, NU
 FROM wallets_scripts ws
 INNER JOIN scripts s USING (code, script);
 
-
+-- Returns a log of inputs and outputs, order by seen_at advised
 CREATE OR REPLACE VIEW ins_outs AS
 SELECT * FROM 
 (SELECT o.code, o.tx_id, t.blk_id, 'OUTPUT' source, o.tx_id out_tx_id, o.idx, o.script, o.value, o.immature, t.mempool, t.replaced_by, t.seen_at
@@ -290,7 +274,6 @@ WHERE (blk_id IS NOT NULL OR (mempool IS TRUE AND replaced_by IS NULL));
 -- Returns current UTXOs
 -- Warning: It also returns the UTXO that are confirmed but spent in the mempool, as well as immature utxos.
 --          If you want the available UTXOs which can be spent use 'WHERE spent_mempool IS FALSE AND immature IS FALSE'.
-
 CREATE OR REPLACE VIEW utxos AS
 WITH current_ins AS
 (
@@ -305,6 +288,9 @@ LEFT JOIN current_ins i ON o.code = i.code AND o.tx_id = i.spent_tx_id AND o.idx
 WHERE o.spent_blk_id IS NULL AND (txo.blk_id IS NOT NULL OR (txo.mempool IS TRUE AND txo.replaced_by IS NULL)) AND
 	  (i.input_tx_id IS NULL OR i.mempool IS TRUE);
 
+-- Returns UTXOs with their associate wallet
+-- Warning: It also returns the UTXO that are confirmed but spent in the mempool, as well as immature utxos.
+--          If you want the available UTXOs which can be spent use 'WHERE spent_mempool IS FALSE AND immature IS FALSE'.
 CREATE OR REPLACE VIEW wallets_utxos AS
 SELECT q.wallet_id, u.* FROM utxos u,
 LATERAL (SELECT dw.wallet_id, dw.code, ds.script
@@ -316,12 +302,17 @@ LATERAL (SELECT dw.wallet_id, dw.code, ds.script
 		 FROM wallets_scripts ws
 		 WHERE ws.code=u.code AND u.script=ws.script) q;
 
+-- Returns the balances of a wallet
 CREATE OR REPLACE VIEW wallets_balances AS
 SELECT
 	wallet_id,
+	-- The balance if all unconfirmed transactions, non-conflicting, were finally confirmed
 	COALESCE(SUM(value) FILTER (WHERE spent_mempool IS FALSE), 0) unconfirmed_balance,
+	-- The balance only taking into accounts confirmed transactions
 	COALESCE(SUM(value) FILTER (WHERE blk_id IS NOT NULL), 0) confirmed_balance,
+	-- Same as unconfirmed_balance, removing immature utxos (utxos from a miner aged less than 100 blocks)
 	COALESCE(SUM(value) FILTER (WHERE spent_mempool IS FALSE AND immature IS FALSE), 0) available_balance,
+	-- The total value of immature utxos (utxos from a miner aged less than 100 blocks)
 	COALESCE(SUM(value) FILTER (WHERE immature IS TRUE), 0) immature_balance
 FROM wallets_utxos
 GROUP BY wallet_id;
