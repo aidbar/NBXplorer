@@ -5,8 +5,7 @@
   confirmed BOOLEAN DEFAULT 't',
   indexed_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (code, blk_id));
-CREATE INDEX IF NOT EXISTS blks_code_height_idx ON blks (code, height DESC) WHERE confirmed = 't';
-CREATE INDEX IF NOT EXISTS blks_code_blk_id_confirmed_height_idx ON blks (code, blk_id, confirmed, height);
+CREATE INDEX IF NOT EXISTS blks_code_height_idx ON blks (code, height DESC) WHERE confirmed IS TRUE;
 
 CREATE TABLE IF NOT EXISTS txs (
   code TEXT NOT NULL,
@@ -32,10 +31,12 @@ ALTER TABLE txs ADD CONSTRAINT txs_code_replaced_by_fkey FOREIGN KEY (code, repl
 CREATE INDEX IF NOT EXISTS txs_unconf_idx ON txs (code) INCLUDE (tx_id) WHERE mempool IS TRUE;
 
 -- Update outs.immature, txs.mempool and txs.replaced_by when a new block comes
-CREATE OR REPLACE PROCEDURE new_block_updated(in_code TEXT, maturity_height INT)
+CREATE OR REPLACE PROCEDURE new_block_updated(in_code TEXT, coinbase_maturity INT)
 AS $$
 DECLARE
+  maturity_height BIGINT;
 BEGIN
+	maturity_height := (SELECT MAX(height) - coinbase_maturity + 1 FROM blks WHERE code='BTC' AND confirmed IS TRUE);
 	-- Turn immature flag of outputs to mature
 	-- Note that we never set the outputs back to immature, even in reorg
 	-- But that's such a corner case that we don't care.
@@ -43,7 +44,7 @@ BEGIN
 	  SELECT o.code, o.tx_id, o.idx FROM outs o
 	  JOIN txs t USING (code, tx_id)
 	  JOIN blks b ON b.code=o.code AND b.blk_id=t.blk_id
-	  WHERE o.code=in_code AND o.immature='t' AND b.height < maturity_height
+	  WHERE o.code=in_code AND o.immature IS TRUE AND b.height < maturity_height
 	)
 	UPDATE outs o SET immature='f' 
 	FROM q
@@ -137,7 +138,7 @@ CREATE TABLE IF NOT EXISTS outs (
   FOREIGN KEY (code, tx_id) REFERENCES txs ON DELETE CASCADE,
   FOREIGN KEY (code, script) REFERENCES scripts ON DELETE CASCADE);
 
-CREATE INDEX IF NOT EXISTS outs_code_immature ON outs (code) INCLUDE (tx_Id, idx) WHERE immature='t';
+CREATE INDEX IF NOT EXISTS outs_code_immature ON outs (code) INCLUDE (tx_Id, idx) WHERE immature IS TRUE;
 
 CREATE OR REPLACE FUNCTION set_scripts_used()
   RETURNS TRIGGER 
@@ -260,30 +261,6 @@ FROM ins i
 JOIN outs o ON i.code=o.code AND i.spent_tx_id=o.tx_id AND i.spent_idx=o.idx
 JOIN txs t ON i.code=t.code AND i.input_tx_id=t.tx_id) q
 WHERE (blk_id IS NOT NULL OR (mempool IS TRUE AND replaced_by IS NULL));
-
--- We could replace this with a simple UPDATE, but it doesn't take the right index.
--- In practice, this function will rarely modify any data, this make sure the index outs_code_immature is used.
-CREATE OR REPLACE FUNCTION set_maturity_below_height(in_code TEXT, in_height INT) RETURNS INT AS
-$BODY$
-DECLARE
-  r RECORD;
-  rowUpdated INT;
-BEGIN
-  rowUpdated = 0;
-  FOR r IN SELECT o.tx_id, o.idx FROM outs o
-		   JOIN txs t USING (code, tx_id)
-		   JOIN blks b ON b.code=o.code AND b.blk_id=t.blk_id
-		   WHERE o.code=in_code AND o.immature='t' AND b.height < in_height
-  LOOP
-	-- This look sub-optimal, but maturity is such a corned case that this line will rarely get executed.
-	-- even for a miner, it would be executed a few time per day.
-	UPDATE outs SET immature='f' WHERE code=in_code AND tx_id=r.tx_id AND idx=r.idx;
-	rowUpdated = rowUpdated + 1;
-  END LOOP;
-  RETURN rowUpdated;
-END
-$BODY$  LANGUAGE plpgsql;
-
 
 -- Returns current UTXOs
 -- Warning: It also returns the UTXO that are confirmed but spent in the mempool, as well as immature utxos.

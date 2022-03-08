@@ -569,9 +569,12 @@ namespace NBXplorer
 				return;
 			await using var helper = await connectionFactory.CreateConnectionHelper(Network);
 			var connection = helper.Connection;
+			bool hasBlock = false;
 			await helper.SaveTransactions(transactions.Select(t => (t.Transaction, t.TransactionHash, t.BlockHash, t.BlockIndex)), null);
 			foreach (var tx in transactions)
 			{
+				if (tx.BlockHash is not null)
+					hasBlock = true;
 				var outs = tx.GetReceivedOutputs()
 					.Select(received =>
 					new
@@ -599,6 +602,15 @@ namespace NBXplorer
 					"SELECT i.* FROM (VALUES (@code, @input_tx_id, @input_idx, @spent_tx_id, @spent_idx)) i " +
 					"WHERE EXISTS (SELECT FROM outs WHERE code = @code AND tx_id = @spent_tx_id AND idx = @spent_idx) FOR SHARE " +
 					"ON CONFLICT DO NOTHING", ins);
+			}
+			if (hasBlock)
+			{
+				await connection.ExecuteAsync("CALL new_block_updated(@code, @maturity)",
+					new
+					{
+						code = Network.CryptoCode,
+						maturity = Network.NBitcoinNetwork.Consensus.CoinbaseMaturity
+					});
 			}
 		}
 
@@ -696,18 +708,16 @@ namespace NBXplorer
 			await using var conn = await GetConnection();
 			var tip = await conn.GetTip();
 			if (tip is not null && newTip.Previous != tip.Hash)
-				await conn.Connection.ExecuteScalarAsync<int>("UPDATE blks SET confirmed='f' WHERE height >= @newtipheight", new { newtipheight = newTip.Height });
+				await conn.Connection.ExecuteAsync("CALL orphan_blocks(@code, @height);", new { code = Network.CryptoCode, height = newTip.Height });
 			var parameters = new
 			{
 				code = Network.CryptoCode,
 				id = newTip.Hash.ToString(),
 				prev = newTip.Previous.ToString(),
-				height = newTip.Height,
-				maturity = newTip.Height - Network.NBitcoinNetwork.Consensus.CoinbaseMaturity + 1
+				height = newTip.Height
 			};
 			await conn.Connection.ExecuteAsync(
-				"INSERT INTO blks VALUES (@code, @id, @height, @prev) ON CONFLICT (code, blk_id) DO UPDATE SET confirmed='t';" +
-				"SELECT set_maturity_below_height(@code, @maturity);", parameters);
+				"INSERT INTO blks VALUES (@code, @id, @height, @prev) ON CONFLICT (code, blk_id) DO UPDATE SET confirmed='t';", parameters);
 		}
 	}
 }
