@@ -55,7 +55,7 @@ BEGIN
 	SELECT t.code, t.tx_id, b.blk_id, tb.blk_idx FROM txs t
 	JOIN txs_blks tb USING (code, tx_id)
 	JOIN blks b ON b.code=tb.code AND b.blk_id=tb.blk_id
-	WHERE t.code=in_code AND mempool IS TRUE AND b.confirmed IS TRUE)
+	WHERE t.code=in_code AND t.mempool IS TRUE AND b.confirmed IS TRUE)
 	UPDATE txs t SET mempool='f', replaced_by=NULL, blk_id=q.blk_id, blk_idx=q.blk_idx
 	FROM q
 	WHERE t.code=q.code AND t.tx_id=q.tx_id;
@@ -64,14 +64,14 @@ BEGIN
 	WITH q AS (
 	SELECT mempool_ins.code, mempool_ins.tx_id mempool_tx_id, confirmed_ins.tx_id confirmed_tx_id
 	FROM 
-	  (SELECT i.code, i.spent_tx_id, t.tx_id FROM ins i
+	  (SELECT i.code, i.spent_tx_id, i.spent_idx, t.tx_id FROM ins i
 	  JOIN txs t ON t.code=i.code AND t.tx_id=i.input_tx_id
 	  WHERE i.code=in_code AND t.mempool IS TRUE) mempool_ins
 	LEFT JOIN (
-	  SELECT i.code, i.spent_tx_id, t.tx_id FROM ins i
+	  SELECT i.code, i.spent_tx_id, i.spent_idx, t.tx_id FROM ins i
 	  JOIN txs t ON t.code=i.code AND t.tx_id=i.input_tx_id
 	  WHERE i.code=in_code AND t.blk_id IS NOT NULL
-	) confirmed_ins USING (code, spent_tx_id)
+	) confirmed_ins USING (code, spent_tx_id, spent_idx)
 	WHERE confirmed_ins.tx_id IS NOT NULL) -- The use of LEFT JOIN is intentional, it forces postgres to use a specific index
 	UPDATE txs t SET mempool='f', replaced_by=q.confirmed_tx_id
 	FROM q

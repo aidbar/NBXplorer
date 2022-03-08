@@ -556,6 +556,7 @@ namespace NBXplorer
 			await using var helper = await GetConnection();
 			var receivedCoinsToDelete =
 				prunable
+				.Where(p => p.BlockHash is not null)
 				.SelectMany(c => c.ReceivedCoins)
 				.Select(c => new
 				{
@@ -565,6 +566,7 @@ namespace NBXplorer
 				}).ToArray();
 			var spentCoins =
 				prunable
+				.Where(p => p.BlockHash is not null)
 				.SelectMany(c => c.SpentOutpoints)
 				.Select(c => new
 				{
@@ -574,6 +576,14 @@ namespace NBXplorer
 				}).ToArray();
 			await helper.Connection.ExecuteAsync("DELETE FROM outs WHERE code=@code AND tx_id=@txId AND idx=@idx", receivedCoinsToDelete);
 			await helper.Connection.ExecuteAsync("DELETE FROM ins WHERE code=@code AND spent_tx_id=@txId AND spent_idx=@idx", spentCoins);
+
+			var mempoolPrunable =
+				prunable
+				.Where(p => p.BlockHash is null)
+				.Select(p => new { code = Network.CryptoCode, txId = p.TransactionHash.ToString() })
+				.ToArray();
+
+			await helper.Connection.ExecuteAsync("UPDATE txs SET mempool='t' WHERE code=@code AND tx_id=@txId", mempoolPrunable);
 		}
 
 		public async Task<long> SaveEvent(NewEventBase evt)

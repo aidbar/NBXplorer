@@ -36,8 +36,7 @@ namespace NBXplorer.Tests
 			conn.Execute(GetScript("generate-whale.sql"));
 			await Benchmark(conn, "SELECT * FROM wallets_utxos;", 50);
 			await Benchmark(conn, "CALL new_block_updated('BTC', 100);", 50);
-			conn.Execute("VACUUM FULL");
-			await Benchmark(conn, "CALL orphan_blocks('BTC', 1000000);", 2_000);
+			await Benchmark(conn, "CALL orphan_blocks('BTC', 1000000);", 200);
 		}
 
 		private static string GetScript(string script)

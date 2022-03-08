@@ -8,9 +8,12 @@ SELECT 'BTC', encode(sha256(('b-' || s)::bytea), 'hex') blk_id, s height, encode
 FROM generate_series(0, 223000) s;
 
 INSERT INTO txs
-SELECT 'BTC', encode(sha256(('t-' || s)::bytea), 'hex') tx_id, NULL, encode(sha256(('b-' || (s))::bytea), 'hex') blk_id, 0, 'f'
+SELECT 'BTC', encode(sha256(('t-' || s)::bytea), 'hex') tx_id, NULL, NULL, 0, 't'
 FROM generate_series(0, 223000) s;
 
+INSERT INTO txs_blks
+SELECT 'BTC', encode(sha256(('t-' || s)::bytea), 'hex') tx_id,  encode(sha256(('b-' || s)::bytea), 'hex') tx_id, 0
+FROM generate_series(0, 223000) s;
 
 INSERT INTO scripts
 SELECT 'BTC', encode(sha256(('s-' || s)::bytea), 'hex') script, 'lol' addr
@@ -36,3 +39,4 @@ SELECT 'BTC', 'WHALEDESC', s, encode(sha256(('s-' || s)::bytea), 'hex') script, 
 FROM generate_series(0, 223000) s;
 
 CALL new_block_updated('BTC', 100);
+ANALYZE;

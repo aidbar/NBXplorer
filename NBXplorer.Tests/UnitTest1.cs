@@ -275,7 +275,7 @@ namespace NBXplorer.Tests
 
 		private static void MarkAsUsed(IRepository repository, DerivationStrategyBase strat, KeyPath keyPath)
 		{
-			if (repository is RepositoryLegacy l)
+			if (repository is PostgresRepository l)
 			{
 				var script = strat.GetDerivation(keyPath).ScriptPubKey.ToHex();
 				using var conn = l.ConnectionFactory.CreateConnection().GetAwaiter().GetResult();
