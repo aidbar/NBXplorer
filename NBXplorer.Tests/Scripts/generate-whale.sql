@@ -32,6 +32,7 @@ INSERT INTO descriptors_scripts
 SELECT 'BTC', 'WHALEDESC', s, encode(sha256(('s-' || s)::bytea), 'hex') script, s
 FROM generate_series(0, 223000) s;
 
+CALL new_block_updated('BTC', 100);
 
 -- Test a query
 SELECT io.code, io.tx_id, io.blk_id, io.source, out_tx_id, io.idx, io.script, io.value, io.immature, ts.keypath, io.seen_at

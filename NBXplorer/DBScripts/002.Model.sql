@@ -72,11 +72,22 @@ BEGIN
 	  JOIN txs t ON t.code=i.code AND t.tx_id=i.input_tx_id
 	  WHERE i.code=in_code AND t.blk_id IS NOT NULL
 	) confirmed_ins USING (code, spent_tx_id)
-	WHERE confirmed_ins.tx_id IS NOT NULL)
+	WHERE confirmed_ins.tx_id IS NOT NULL) -- The use of LEFT JOIN is intentional, it forces postgres to use a specific index
 	UPDATE txs t SET mempool='f', replaced_by=q.confirmed_tx_id
 	FROM q
 	WHERE t.code=q.code AND t.tx_id=q.mempool_tx_id;
 
+
+	-- Turn spent_blk_id for outputs which has been spent
+	WITH q AS (
+	SELECT o.code, o.tx_id, o.idx, ti.blk_id FROM outs o
+	JOIN ins i ON i.code=o.code AND i.spent_tx_id=o.tx_id AND i.spent_idx=o.idx
+	JOIN txs ti ON i.code=ti.code AND i.input_tx_id=ti.tx_id
+	WHERE o.code=in_code AND o.spent_blk_id IS NULL AND ti.blk_id IS NOT NULL)
+	UPDATE outs o
+	SET spent_blk_id=q.blk_id
+	FROM q
+	WHERE q.code=o.code AND q.tx_id=o.tx_id AND q.idx=o.idx;
 END;
 $$ LANGUAGE plpgsql;
 
@@ -100,7 +111,18 @@ BEGIN
 	-- Set confirmed flags of blks to false
 	UPDATE blks
 	SET confirmed='f'
-	WHERE height >= in_height;
+	WHERE code=in_code AND height >= in_height;
+
+	-- Set spent_blk_id of outs that where spent back to null
+	WITH q AS (
+	  SELECT o.code, o.tx_id, o.idx FROM outs o
+	  JOIN blks b ON o.code=b.code AND spent_blk_id=b.blk_id
+	  WHERE b.height >= in_height
+	)
+	UPDATE outs o
+	SET spent_blk_id=NULL
+	FROM q
+	WHERE q.code=o.code AND q.tx_id=o.tx_id AND q.idx=o.idx;
 END;
 $$ LANGUAGE plpgsql;
 
@@ -133,12 +155,15 @@ CREATE TABLE IF NOT EXISTS outs (
   script TEXT NOT NULL,
   value BIGINT NOT NULL,
   immature BOOLEAN DEFAULT 'f',
+  spent_blk_id TEXT DEFAULT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
   /* PRIMARY KEY (code, tx_id, idx) (enforced with index), */
+  FOREIGN KEY (code, spent_blk_id) REFERENCES blks (code, blk_id) ON DELETE SET NULL,
   FOREIGN KEY (code, tx_id) REFERENCES txs ON DELETE CASCADE,
   FOREIGN KEY (code, script) REFERENCES scripts ON DELETE CASCADE);
 
-CREATE INDEX IF NOT EXISTS outs_code_immature ON outs (code) INCLUDE (tx_Id, idx) WHERE immature IS TRUE;
+CREATE INDEX IF NOT EXISTS outs_code_immature_idx ON outs (code) INCLUDE (tx_id, idx) WHERE immature IS TRUE;
+CREATE INDEX IF NOT EXISTS outs_unspent_idx ON outs (code) WHERE spent_blk_id IS NULL;
 
 CREATE OR REPLACE FUNCTION set_scripts_used()
   RETURNS TRIGGER 
@@ -277,18 +302,19 @@ SELECT o.*, ob.blk_id, ob.height, i.input_tx_id spending_tx_id, i.input_idx spen
 JOIN txs txo USING (code, tx_id)
 LEFT JOIN blks ob USING (code, blk_id)
 LEFT JOIN current_ins i ON o.code = i.code AND o.tx_id = i.spent_tx_id AND o.idx = i.spent_idx
-WHERE (txo.blk_id IS NOT NULL OR (txo.mempool IS TRUE AND txo.replaced_by IS NULL)) AND
+WHERE o.spent_blk_id IS NULL AND (txo.blk_id IS NOT NULL OR (txo.mempool IS TRUE AND txo.replaced_by IS NULL)) AND
 	  (i.input_tx_id IS NULL OR i.mempool IS TRUE);
 
 CREATE OR REPLACE VIEW wallets_utxos AS
-SELECT s.wallet_id, u.*
-FROM (SELECT dw.wallet_id, dw.code, ds.script
-FROM descriptors_wallets dw
-INNER JOIN descriptors_scripts ds ON dw.code = ds.code AND dw.descriptor = ds.descriptor
-UNION
-SELECT ws.wallet_id, ws.code, ws.script
-FROM wallets_scripts ws) s
-INNER JOIN utxos u ON s.code=u.code AND s.script=u.script;
+SELECT q.wallet_id, u.* FROM utxos u,
+LATERAL (SELECT dw.wallet_id, dw.code, ds.script
+		 FROM descriptors_wallets dw
+		 INNER JOIN descriptors_scripts ds ON dw.code = ds.code AND dw.descriptor = ds.descriptor
+         WHERE ds.code = u.code AND u.script = ds.script
+		 UNION
+		 SELECT ws.wallet_id, ws.code, ws.script
+		 FROM wallets_scripts ws
+		 WHERE ws.code=u.code AND u.script=ws.script) q;
 
 CREATE OR REPLACE VIEW wallets_balances AS
 SELECT
