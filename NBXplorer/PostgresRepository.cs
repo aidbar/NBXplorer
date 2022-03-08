@@ -18,9 +18,9 @@ using NBitcoin.RPC;
 
 namespace NBXplorer
 {
-	public class RepositoryProviderLegacy : IRepositoryProvider
+	public class PostgresRepositoryProvider : IRepositoryProvider
 	{
-		Dictionary<string, RepositoryLegacy> _Repositories = new Dictionary<string, RepositoryLegacy>();
+		Dictionary<string, PostgresRepository> _Repositories = new Dictionary<string, PostgresRepository>();
 		ExplorerConfiguration _Configuration;
 
 		public Task StartCompletion => Task.CompletedTask;
@@ -29,7 +29,7 @@ namespace NBXplorer
 		public DbConnectionFactory ConnectionFactory { get; }
 		public KeyPathTemplates KeyPathTemplates { get; }
 
-		public RepositoryProviderLegacy(NBXplorerNetworkProvider networks,
+		public PostgresRepositoryProvider(NBXplorerNetworkProvider networks,
 			ExplorerConfiguration configuration,
 			DbConnectionFactory connectionFactory,
 			KeyPathTemplates keyPathTemplates)
@@ -41,7 +41,7 @@ namespace NBXplorer
 		}
 		public IRepository GetRepository(string cryptoCode)
 		{
-			_Repositories.TryGetValue(cryptoCode, out RepositoryLegacy repository);
+			_Repositories.TryGetValue(cryptoCode, out PostgresRepository repository);
 			return repository;
 		}
 		public IRepository GetRepository(NBXplorerNetwork network)
@@ -57,7 +57,7 @@ namespace NBXplorer
 				if (settings != null)
 				{
 					var repo = net.NBitcoinNetwork.NetworkSet == Liquid.Instance ? throw new NotSupportedException() :
-						new RepositoryLegacy(ConnectionFactory, net, KeyPathTemplates, settings.RPC);
+						new PostgresRepository(ConnectionFactory, net, KeyPathTemplates, settings.RPC);
 					repo.MaxPoolSize = _Configuration.MaxGapSize;
 					repo.MinPoolSize = _Configuration.MinGapSize;
 					repo.MinUtxoValue = settings.MinUtxoValue;
@@ -89,13 +89,13 @@ namespace NBXplorer
 			return Task.CompletedTask;
 		}
 	}
-	public class RepositoryLegacy : IRepository
+	public class PostgresRepository : IRepository
 	{
 		private DbConnectionFactory connectionFactory;
 		private readonly RPCClient rpc;
 
 		public DbConnectionFactory ConnectionFactory => connectionFactory;
-		public RepositoryLegacy(DbConnectionFactory connectionFactory, NBXplorerNetwork network, KeyPathTemplates keyPathTemplates, RPCClient rpc)
+		public PostgresRepository(DbConnectionFactory connectionFactory, NBXplorerNetwork network, KeyPathTemplates keyPathTemplates, RPCClient rpc)
 		{
 			this.connectionFactory = connectionFactory;
 			Network = network;

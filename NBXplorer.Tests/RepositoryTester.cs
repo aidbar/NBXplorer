@@ -50,7 +50,7 @@ namespace NBXplorer.Tests
 				ConfigurationBuilder builder = new ConfigurationBuilder();
 				builder.AddInMemoryCollection(new[] { new KeyValuePair<string,string>("POSTGRES", ServerTester.GetTestPostgres(null, name)) });
 				services.AddSingleton<IConfiguration>(builder.Build());
-				services.AddSingleton<IRepositoryProvider, RepositoryProviderLegacy>();
+				services.AddSingleton<IRepositoryProvider, PostgresRepositoryProvider>();
 				services.AddSingleton<HostedServices.DatabaseSetupHostedService>();
 				
 			}

@@ -152,7 +152,7 @@ namespace NBXplorer
 			services.TryAddSingleton<CookieRepository>();
 			if (configuration.ISNBXplorerV2())
 			{
-				services.TryAddSingleton<IRepositoryProvider, RepositoryProviderLegacy>();
+				services.TryAddSingleton<IRepositoryProvider, PostgresRepositoryProvider>();
 				services.AddHostedService<HostedServices.DatabaseSetupHostedService>();
 				services.AddSingleton<DbConnectionFactory>();
 			}
