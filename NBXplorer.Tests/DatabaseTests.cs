@@ -15,6 +15,8 @@ using Xunit.Abstractions;
 using Microsoft.Extensions.Configuration;
 using NBXplorer.Configuration;
 using System.Runtime.CompilerServices;
+using System.IO;
+using System.Diagnostics;
 
 namespace NBXplorer.Tests
 {
@@ -26,6 +28,42 @@ namespace NBXplorer.Tests
 		}
 
 		public ITestOutputHelper Logs { get; }
+
+		[Fact]
+		public async Task BenchmarkDatabase()
+		{
+			await using var conn = await GetConnection();
+			conn.Execute(GetScript("generate-whale.sql"));
+			await Benchmark(conn, "SELECT * FROM wallets_utxos;", 50);
+			await Benchmark(conn, "CALL new_block_updated('BTC', 100);", 50);
+			conn.Execute("VACUUM FULL");
+			await Benchmark(conn, "CALL orphan_blocks('BTC', 1000000);", 2_000);
+		}
+
+		private static string GetScript(string script)
+		{
+
+			var directory = new DirectoryInfo(Directory.GetCurrentDirectory());
+			while (directory != null && !directory.GetFiles("*.csproj").Any())
+			{
+				directory = directory.Parent;
+			}
+			return File.ReadAllText(Path.Combine(directory.FullName, "Scripts", script));
+		}
+
+		private async Task Benchmark(DbConnection connection, string script, int target)
+		{
+			// Warmup
+			await connection.ExecuteAsync(script);
+			Stopwatch stopwatch = new Stopwatch();
+			stopwatch.Start();
+			int iterations = 20;
+			await connection.ExecuteAsync(string.Join(';', Enumerable.Range(0, iterations).Select(o => script)));
+			stopwatch.Stop();
+			var ms = ((int)TimeSpan.FromTicks(stopwatch.ElapsedTicks / iterations).TotalMilliseconds);
+			Logs.WriteLine(script + " : " + ms + " ms");
+			Assert.True(ms < target, "Unacceptable response time");
+		}
 
 		[Fact]
 		public async Task CanCalculateUTXO()
@@ -250,6 +288,7 @@ namespace NBXplorer.Tests
 			container.AddSingleton<IConfiguration>(conf);
 			container.AddLogging(builder =>
 			{
+				builder.AddFilter("System.Net.Http.HttpClient", LogLevel.Error);
 				builder.AddProvider(new XUnitLoggerProvider(Logs));
 			});
 			new Startup(conf).ConfigureServices(container);

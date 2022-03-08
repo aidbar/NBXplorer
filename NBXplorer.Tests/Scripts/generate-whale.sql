@@ -1,5 +1,8 @@
 ﻿-- This script generate a whale wallet with 223000 transactions, used to check query performance.
 
+SET random_page_cost = 1.0;
+SET enable_seqscan = off;
+
 INSERT INTO blks
 SELECT 'BTC', encode(sha256(('b-' || s)::bytea), 'hex') blk_id, s height, encode(sha256(('b-' || (s-1))::bytea), 'hex') prev_id
 FROM generate_series(0, 223000) s;
@@ -33,10 +36,3 @@ SELECT 'BTC', 'WHALEDESC', s, encode(sha256(('s-' || s)::bytea), 'hex') script, 
 FROM generate_series(0, 223000) s;
 
 CALL new_block_updated('BTC', 100);
-
--- Test a query
-SELECT io.code, io.tx_id, io.blk_id, io.source, out_tx_id, io.idx, io.script, io.value, io.immature, ts.keypath, io.seen_at
-FROM tracked_scripts ts
-JOIN ins_outs io USING (code, script) 
-JOIN blks b USING (code, blk_id)
-WHERE ts.code='BTC' AND ts.wallet_id='WHALE'

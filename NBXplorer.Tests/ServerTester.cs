@@ -211,12 +211,13 @@ namespace NBXplorer.Tests
 			dbName = dbName.ToLowerInvariant();
 			if (string.IsNullOrEmpty(connectionString))
 			{
-				connectionString = $"User ID=postgres;Host=localhost;Include Error Detail=true;Application Name={applicationName};Port=39383;Database={dbName}";
+				connectionString = $"User ID=postgres;Host=localhost;CommandTimeout=120;Include Error Detail=true;Application Name={applicationName};Port=39383;Database={dbName}";
 			}
 			else
 			{
 				Npgsql.NpgsqlConnectionStringBuilder builder = new Npgsql.NpgsqlConnectionStringBuilder(connectionString);
 				builder.Database = dbName;
+				builder.CommandTimeout = 120;
 				builder.ApplicationName = applicationName;
 				connectionString = builder.ToString();
 			}

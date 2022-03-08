@@ -108,21 +108,21 @@ BEGIN
 	FROM q
 	WHERE q.code=t.code AND q.tx_id=t.tx_id;
 
-	-- Set confirmed flags of blks to false
-	UPDATE blks
-	SET confirmed='f'
-	WHERE code=in_code AND height >= in_height;
-
 	-- Set spent_blk_id of outs that where spent back to null
 	WITH q AS (
 	  SELECT o.code, o.tx_id, o.idx FROM outs o
 	  JOIN blks b ON o.code=b.code AND spent_blk_id=b.blk_id
-	  WHERE b.height >= in_height
+	  WHERE o.code=in_code AND b.height >= in_height AND confirmed IS TRUE
 	)
 	UPDATE outs o
 	SET spent_blk_id=NULL
 	FROM q
 	WHERE q.code=o.code AND q.tx_id=o.tx_id AND q.idx=o.idx;
+
+	-- Set confirmed flags of blks to false
+	UPDATE blks
+	SET confirmed='f'
+	WHERE code=in_code AND height >= in_height;
 END;
 $$ LANGUAGE plpgsql;
 
