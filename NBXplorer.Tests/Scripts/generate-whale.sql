@@ -1,8 +1,4 @@
 ﻿-- This script generate a whale wallet with 223000 transactions, used to check query performance.
-
-SET random_page_cost = 1.0;
-SET enable_seqscan = off;
-
 INSERT INTO blks
 SELECT 'BTC', encode(sha256(('b-' || s)::bytea), 'hex') blk_id, s height, encode(sha256(('b-' || (s-1))::bytea), 'hex') prev_id
 FROM generate_series(0, 223000) s;

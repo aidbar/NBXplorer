@@ -34,6 +34,7 @@ namespace NBXplorer.Tests
 		{
 			await using var conn = await GetConnection();
 			conn.Execute(GetScript("generate-whale.sql"));
+			Logs.WriteLine("Data loaded");
 			await Benchmark(conn, "SELECT * FROM wallets_utxos;", 50);
 			await Benchmark(conn, "CALL new_block_updated('BTC', 100);", 50);
 			await Benchmark(conn, "CALL orphan_blocks('BTC', 1000000);", 200);
@@ -61,7 +62,7 @@ namespace NBXplorer.Tests
 			stopwatch.Stop();
 			var ms = ((int)TimeSpan.FromTicks(stopwatch.ElapsedTicks / iterations).TotalMilliseconds);
 			Logs.WriteLine(script + " : " + ms + " ms");
-			Assert.True(ms < target, "Unacceptable response time for " + target);
+			Assert.True(ms < target, "Unacceptable response time for " + script);
 		}
 
 		[Fact]
