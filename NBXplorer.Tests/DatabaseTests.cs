@@ -61,7 +61,7 @@ namespace NBXplorer.Tests
 			stopwatch.Stop();
 			var ms = ((int)TimeSpan.FromTicks(stopwatch.ElapsedTicks / iterations).TotalMilliseconds);
 			Logs.WriteLine(script + " : " + ms + " ms");
-			Assert.True(ms < target, "Unacceptable response time");
+			Assert.True(ms < target, "Unacceptable response time for " + target);
 		}
 
 		[Fact]
