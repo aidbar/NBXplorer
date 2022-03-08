@@ -134,6 +134,7 @@ namespace NBXplorer.Tests
 
 		public int TrimEvents { get; set; } = -1;
 		public bool UseRabbitMQ { get; set; } = false;
+		string PostgresConnectionString;
 		private void StartNBXplorer()
 		{
 			var port = CustomServer.FreeTcpPort();
@@ -141,8 +142,8 @@ namespace NBXplorer.Tests
 			keyValues.Add(("conf", Path.Combine(datadir, "settings.config")));
 			if (Backend == Backend.Postgres)
 			{
-				string connectionString = GetTestPostgres(null, _Name);
-				keyValues.Add(("postgres", connectionString));
+				PostgresConnectionString ??= GetTestPostgres(null, _Name);
+				keyValues.Add(("postgres", PostgresConnectionString));
 			}
 			keyValues.Add(("datadir", datadir));
 			keyValues.Add(("port", port.ToString()));

@@ -49,7 +49,7 @@ namespace NBXplorer
 			return GetRepository(network.CryptoCode);
 		}
 
-		public Task StartAsync(CancellationToken cancellationToken)
+		public async Task StartAsync(CancellationToken cancellationToken)
 		{
 			foreach (var net in Networks.GetAll())
 			{
@@ -64,7 +64,20 @@ namespace NBXplorer
 					_Repositories.Add(net.CryptoCode, repo);
 				}
 			}
-			return Task.CompletedTask;
+			if (_Configuration.TrimEvents > 0)
+			{
+				Logs.Explorer.LogInformation("Trimming the event table if needed...");
+				int trimmed = 0;
+				foreach (var repo in _Repositories.Select(kv => kv.Value))
+				{
+					if (GetChainSetting(repo.Network) is ChainConfiguration chainConf)
+					{
+						trimmed += await repo.TrimmingEvents(_Configuration.TrimEvents, cancellationToken);
+					}
+				}
+				if (trimmed != 0)
+					Logs.Explorer.LogInformation($"Trimmed {trimmed} events in total...");
+			}
 		}
 		private ChainConfiguration GetChainSetting(NBXplorerNetwork net)
 		{
@@ -664,9 +677,13 @@ namespace NBXplorer
 				, new { code = Network.CryptoCode, script = address.ScriptPubKey.ToHex(), addr = address.ScriptPubKey.GetDestinationAddress(Network.NBitcoinNetwork).ToString(), walletId });
 		}
 
-		public ValueTask<int> TrimmingEvents(int maxEvents, CancellationToken cancellationToken = default)
+		public async ValueTask<int> TrimmingEvents(int maxEvents, CancellationToken cancellationToken = default)
 		{
-			return default;
+			await using var conn = await GetConnection();
+			var id = conn.Connection.ExecuteScalar<long?>("SELECT id FROM evts WHERE code=@code ORDER BY id DESC OFFSET @maxEvents LIMIT 1", new { code = Network.CryptoCode, maxEvents = maxEvents - 1 });
+			if (id is long i)
+				return await conn.Connection.ExecuteAsync("DELETE FROM evts WHERE code=@code AND id < @id", new { code = Network.CryptoCode, id = i });
+			return 0;
 		}
 
 		private Task<DbConnectionHelper> GetConnection()

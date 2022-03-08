@@ -1496,10 +1496,12 @@ namespace NBXplorer.Tests
 		{
 			public string Message { get; set; }
 		}
-		[Fact]
-		public void CanTrimEvents()
+		[Theory]
+		[InlineData(Backend.Postgres)]
+		[InlineData(Backend.DBTrie)]
+		public void CanTrimEvents(Backend backend)
 		{
-			using (var tester = ServerTester.Create())
+			using (var tester = ServerTester.Create(backend))
 			{
 				tester.Client.WaitServerStarted();
 				var ids = tester.Explorer.Generate(100);

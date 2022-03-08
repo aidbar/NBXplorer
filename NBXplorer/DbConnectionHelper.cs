@@ -133,7 +133,7 @@ namespace NBXplorer
 			return toGenerate;
 		}
 
-		record SpentUTXORow(System.String code, System.String tx_id, System.Int32 idx, System.String script, System.Int64 value, bool immature, System.DateTime created_at, string spent_outpoint);
+		record SpentUTXORow(System.String code, System.String tx_id, System.Int32 idx, System.String script, System.Int64 value, System.Boolean immature, System.String spent_blk_id, System.DateTime created_at, System.String spent_outpoint);
 		public Task<Dictionary<OutPoint, TxOut>> GetOutputs(IList<OutPoint> outPoints)
 		{
 			return GetOutputs(outPoints.Select(o => o.ToString()).ToArray());
