@@ -5,7 +5,7 @@ SELECT 'BTC', encode(sha256(('b-' || s)::bytea), 'hex') blk_id, s height, encode
 FROM generate_series(0, 223000) s;
 
 INSERT INTO txs
-SELECT 'BTC', encode(sha256(('t-' || s)::bytea), 'hex') tx_id, NULL, encode(sha256(('b-' || (s))::bytea), 'hex') blk_id
+SELECT 'BTC', encode(sha256(('t-' || s)::bytea), 'hex') tx_id, NULL, encode(sha256(('b-' || (s))::bytea), 'hex') blk_id, 'f'
 FROM generate_series(0, 223000) s;
 
 
