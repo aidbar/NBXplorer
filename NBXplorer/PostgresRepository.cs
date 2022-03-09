@@ -578,7 +578,7 @@ namespace NBXplorer
 				{
 					code = Network.CryptoCode,
 					txId = c.Outpoint.Hash.ToString(),
-					idx = (int)c.Outpoint.N
+					idx = (long)c.Outpoint.N
 				}).ToArray();
 			var spentCoins =
 				prunable
@@ -588,7 +588,7 @@ namespace NBXplorer
 				{
 					code = Network.CryptoCode,
 					txId = c.Hash.ToString(),
-					idx = (int)c.N
+					idx = (long)c.N
 				}).ToArray();
 			await helper.Connection.ExecuteAsync("DELETE FROM outs WHERE code=@code AND tx_id=@txId AND idx=@idx", receivedCoinsToDelete);
 			await helper.Connection.ExecuteAsync("DELETE FROM ins WHERE code=@code AND spent_tx_id=@txId AND spent_idx=@idx", spentCoins);

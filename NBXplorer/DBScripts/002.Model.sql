@@ -37,7 +37,7 @@ RETURNS TABLE(code TEXT, blk_id TEXT, height BIGINT) AS $$
 $$  LANGUAGE SQL STABLE;
 
 -- Update outs.immature, txs.mempool and txs.replaced_by when a new block comes
-CREATE OR REPLACE PROCEDURE new_block_updated(in_code TEXT, coinbase_maturity INT)
+CREATE OR REPLACE PROCEDURE new_block_updated(in_code TEXT, coinbase_maturity BIGINT)
 AS $$
 DECLARE
   maturity_height BIGINT;
@@ -182,7 +182,7 @@ ALTER TABLE scripts ADD CONSTRAINT scripts_pkey PRIMARY KEY USING INDEX scripts_
 CREATE TABLE IF NOT EXISTS outs (
   code TEXT NOT NULL,
   tx_id TEXT NOT NULL,
-  idx INT NOT NULL,
+  idx BIGINT NOT NULL,
   script TEXT NOT NULL,
   value BIGINT NOT NULL,
   immature BOOLEAN DEFAULT 'f',
@@ -219,7 +219,7 @@ CREATE TABLE IF NOT EXISTS ins (
   input_tx_id TEXT NOT NULL,
   input_idx TEXT NOT NULL,
   spent_tx_id TEXT NOT NULL,
-  spent_idx INT NOT NULL,
+  spent_idx BIGINT NOT NULL,
   PRIMARY KEY (code, input_tx_id, input_idx),
   FOREIGN KEY (code, spent_tx_id, spent_idx) REFERENCES outs (code, tx_id, idx) ON DELETE CASCADE,
   FOREIGN KEY (code, input_tx_id) REFERENCES txs (code, tx_id) ON DELETE CASCADE,
@@ -229,14 +229,14 @@ CREATE INDEX IF NOT EXISTS ins_code_spentoutpoint_txid_idx ON ins (code, spent_t
 CREATE TABLE IF NOT EXISTS descriptors (
   code TEXT NOT NULL,
   descriptor TEXT NOT NULL,
-  next_index INT DEFAULT 0,
+  next_index BIGINT DEFAULT 0,
   PRIMARY KEY (code, descriptor)
 );
 
 CREATE TABLE IF NOT EXISTS descriptors_scripts (
   code TEXT NOT NULL,
   descriptor TEXT NOT NULL,
-  idx INT NOT NULL,
+  idx BIGINT NOT NULL,
   script TEXT NOT NULL,
   keypath TEXT NOT NULL,
   /* PRIMARY KEY (code, descriptor, idx) , Enforced via index */
