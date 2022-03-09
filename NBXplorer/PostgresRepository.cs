@@ -641,11 +641,7 @@ namespace NBXplorer
 		{
 			await using var helper = await connectionFactory.CreateConnectionHelper(Network);
 			var wid = source.GetLegacyWalletId(Network);
-			try
-			{
-				await helper.SetMetadata(wid, key, value);
-			}
-			catch (PostgresException ex) when (ex.ConstraintName == "wallet_metadata_wallet_id_fkey")
+			if (!await helper.SetMetadata(wid, key, value))
 			{
 				await helper.CreateWallet(wid);
 				await helper.SetMetadata(wid, key, value);

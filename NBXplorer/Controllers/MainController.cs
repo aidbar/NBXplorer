@@ -1106,6 +1106,7 @@ namespace NBXplorer.Controllers
 			saveMetadata.Add(repo.SaveMetadata(derivationTrackedSource, WellknownMetadataKeys.AccountKeyPath, accountKeyPath));
 			saveMetadata.Add(repo.SaveMetadata<string>(derivationTrackedSource, WellknownMetadataKeys.ImportAddressToRPC, request.ImportKeysToRPC.ToString()));
 			await Task.WhenAll(saveMetadata.ToArray());
+
 			await TrackWallet(cryptoCode, derivation, null);
 			return Json(new GenerateWalletResponse()
 			{

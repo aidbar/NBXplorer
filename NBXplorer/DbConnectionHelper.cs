@@ -245,12 +245,12 @@ namespace NBXplorer
 			return new SlimChainedBlock(uint256.Parse(row.blk_id), uint256.Parse(row.prev_id), (int)row.height);
 		}
 
-		public async Task SetMetadata<TMetadata>(string walletId, string key, TMetadata value) where TMetadata : class
+		public async Task<bool> SetMetadata<TMetadata>(string walletId, string key, TMetadata value) where TMetadata : class
 		{
 			if (value is null)
-				await Connection.ExecuteAsync("UPDATE wallets w SET metadata=(w.metadata - @key) WHERE wallet_id=@walletId", new { walletId, key });
+				return await Connection.ExecuteAsync("UPDATE wallets w SET metadata=(w.metadata - @key) WHERE wallet_id=@walletId", new { walletId, key }) == 1;
 			else
-				await Connection.ExecuteAsync("UPDATE wallets w SET metadata=jsonb_set(COALESCE(w.metadata,'{}'), array[@key], @data::jsonb) WHERE wallet_id=@walletId", new { walletId, key, data = Network.Serializer.ToString(value) });
+				return await Connection.ExecuteAsync("UPDATE wallets w SET metadata=jsonb_set(COALESCE(w.metadata,'{}'), array[@key], @data::jsonb) WHERE wallet_id=@walletId", new { walletId, key, data = Network.Serializer.ToString(value) }) == 1;
 		}
 		public async Task<TMetadata?> GetMetadata<TMetadata>(string walletId, string key) where TMetadata : class
 		{
