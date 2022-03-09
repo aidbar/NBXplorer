@@ -229,7 +229,8 @@ namespace NBXplorer
 			}
 			if (idx == 0)
 				return result;
-			builder.Append(") r (code, script) JOIN tracked_scripts ts USING (code, script);");
+			builder.Append(") r (code, script)," +
+				" LATERAL (SELECT DISTINCT script, addr, source, descriptor, keypath FROM tracked_scripts ts WHERE ts.code=r.code AND ts.script=r.script) ts;");
 			command.CommandText = builder.ToString();
 			await using var reader = await command.ExecuteReaderAsync();
 			while (await reader.ReadAsync())

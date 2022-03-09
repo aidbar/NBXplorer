@@ -39,6 +39,8 @@ namespace NBXplorer.Tests
 			await Benchmark(conn, "SELECT * FROM wallets_utxos;", 50);
 			await Benchmark(conn, "CALL new_block_updated('BTC', 100);", 50);
 			await Benchmark(conn, "CALL orphan_blocks('BTC', 1000000);", 200);
+			await Benchmark(conn, "SELECT ts.script, ts.addr, ts.source, ts.descriptor, ts.keypath FROM ( VALUES ('BTC', 'blah'), ('BTC', 'blah'), ('BTC', 'blah'), ('BTC', 'blah')) r (code, script), LATERAL (SELECT DISTINCT script, addr, source, descriptor, keypath FROM tracked_scripts ts WHERE ts.code=r.code AND ts.script=r.script) ts;", 50);
+			await Benchmark(conn, "SELECT o.tx_id, o.idx, o.value, o.script FROM (VALUES ('BTC', 'hash', 5), ('BTC', 'hash', 5), ('BTC', 'hash', 5))  r (code, tx_id, idx) JOIN outs o USING (code, tx_id, idx);", 50);
 		}
 
 		private static string GetScript(string script)
