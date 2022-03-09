@@ -30,13 +30,19 @@ ALTER TABLE txs ADD CONSTRAINT txs_code_replaced_by_fkey FOREIGN KEY (code, repl
 
 CREATE INDEX IF NOT EXISTS txs_unconf_idx ON txs (code) INCLUDE (tx_id) WHERE mempool IS TRUE;
 
+-- Get the tip (Note we don't returns blks directly, since it prevent function inlining)
+CREATE OR REPLACE FUNCTION get_tip(in_code TEXT)
+RETURNS TABLE(code TEXT, blk_id TEXT, height BIGINT) AS $$
+  SELECT code, blk_id, height FROM blks WHERE code=in_code AND confirmed IS TRUE ORDER BY height DESC LIMIT 1
+$$  LANGUAGE SQL STABLE;
+
 -- Update outs.immature, txs.mempool and txs.replaced_by when a new block comes
 CREATE OR REPLACE PROCEDURE new_block_updated(in_code TEXT, coinbase_maturity INT)
 AS $$
 DECLARE
   maturity_height BIGINT;
 BEGIN
-	maturity_height := (SELECT MAX(height) - coinbase_maturity + 1 FROM blks WHERE code='BTC' AND confirmed IS TRUE);
+	maturity_height := (SELECT height - coinbase_maturity + 1 FROM get_tip(in_code));
 	-- Turn immature flag of outputs to mature
 	-- Note that we never set the outputs back to immature, even in reorg
 	-- But that's such a corner case that we don't care.
@@ -293,19 +299,16 @@ WHERE o.spent_blk_id IS NULL AND (txo.blk_id IS NOT NULL OR (txo.mempool IS TRUE
 --          If you want the available UTXOs which can be spent use 'WHERE spent_mempool IS FALSE AND immature IS FALSE'.
 CREATE OR REPLACE VIEW wallets_utxos AS
 SELECT q.wallet_id, u.* FROM utxos u,
-LATERAL (SELECT dw.wallet_id, dw.code, ds.script
-		 FROM descriptors_wallets dw
-		 INNER JOIN descriptors_scripts ds ON dw.code = ds.code AND dw.descriptor = ds.descriptor
-         WHERE ds.code = u.code AND u.script = ds.script
-		 UNION
-		 SELECT ws.wallet_id, ws.code, ws.script
-		 FROM wallets_scripts ws
-		 WHERE ws.code=u.code AND u.script=ws.script) q;
+LATERAL (SELECT DISTINCT ts.wallet_id, ts.code, ts.script
+		 FROM tracked_scripts ts
+         WHERE ts.code = u.code AND ts.script = u.script) q;
 
--- Returns the balances of a wallet
+-- Returns the balances of a wallet.
+-- Warning: A wallet without any balance may not appear as a row in this view
 CREATE OR REPLACE VIEW wallets_balances AS
 SELECT
 	wallet_id,
+	code,
 	-- The balance if all unconfirmed transactions, non-conflicting, were finally confirmed
 	COALESCE(SUM(value) FILTER (WHERE spent_mempool IS FALSE), 0) unconfirmed_balance,
 	-- The balance only taking into accounts confirmed transactions
@@ -315,4 +318,4 @@ SELECT
 	-- The total value of immature utxos (utxos from a miner aged less than 100 blocks)
 	COALESCE(SUM(value) FILTER (WHERE immature IS TRUE), 0) immature_balance
 FROM wallets_utxos
-GROUP BY wallet_id;
+GROUP BY wallet_id, code;

@@ -583,7 +583,7 @@ namespace NBXplorer
 				.Select(p => new { code = Network.CryptoCode, txId = p.TransactionHash.ToString() })
 				.ToArray();
 
-			await helper.Connection.ExecuteAsync("UPDATE txs SET mempool='t' WHERE code=@code AND tx_id=@txId", mempoolPrunable);
+			await helper.Connection.ExecuteAsync("UPDATE txs SET mempool='f' WHERE code=@code AND tx_id=@txId", mempoolPrunable);
 		}
 
 		public async Task<long> SaveEvent(NewEventBase evt)

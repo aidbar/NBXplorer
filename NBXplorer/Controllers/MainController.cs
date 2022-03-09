@@ -868,6 +868,7 @@ namespace NBXplorer.Controllers
 		[HttpGet]
 		[Route("cryptos/{cryptoCode}/derivations/{derivationScheme}/utxos")]
 		[Route("cryptos/{cryptoCode}/addresses/{address}/utxos")]
+		[PostgresImplementationActionConstraint(false)]
 		public async Task<IActionResult> GetUTXOs(
 			string cryptoCode,
 			[ModelBinder(BinderType = typeof(DerivationStrategyModelBinder))]
