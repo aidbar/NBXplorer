@@ -41,6 +41,7 @@ CREATE OR REPLACE PROCEDURE new_block_updated(in_code TEXT, coinbase_maturity IN
 AS $$
 DECLARE
   maturity_height BIGINT;
+  r RECORD;
 BEGIN
 	maturity_height := (SELECT height - coinbase_maturity + 1 FROM get_tip(in_code));
 	-- Turn immature flag of outputs to mature
@@ -61,27 +62,51 @@ BEGIN
 	SELECT t.code, t.tx_id, b.blk_id, tb.blk_idx FROM txs t
 	JOIN txs_blks tb USING (code, tx_id)
 	JOIN blks b ON b.code=tb.code AND b.blk_id=tb.blk_id
+	-- Theorically, we shouldn't use t.mempool IS TRUE. But this call would slow everything down.
+	-- Here we depend on the indexer to do the right thing
 	WHERE t.code=in_code AND t.mempool IS TRUE AND b.confirmed IS TRUE)
 	UPDATE txs t SET mempool='f', replaced_by=NULL, blk_id=q.blk_id, blk_idx=q.blk_idx
 	FROM q
 	WHERE t.code=q.code AND t.tx_id=q.tx_id;
 
 	-- Turn mempool flag of txs with inputs spent by confirmed blocks to false
-	WITH q AS (
-	SELECT mempool_ins.code, mempool_ins.tx_id mempool_tx_id, confirmed_ins.tx_id confirmed_tx_id
-	FROM 
-	  (SELECT i.code, i.spent_tx_id, i.spent_idx, t.tx_id FROM ins i
-	  JOIN txs t ON t.code=i.code AND t.tx_id=i.input_tx_id
-	  WHERE i.code=in_code AND t.mempool IS TRUE) mempool_ins
-	LEFT JOIN (
-	  SELECT i.code, i.spent_tx_id, i.spent_idx, t.tx_id FROM ins i
-	  JOIN txs t ON t.code=i.code AND t.tx_id=i.input_tx_id
-	  WHERE i.code=in_code AND t.blk_id IS NOT NULL
-	) confirmed_ins USING (code, spent_tx_id, spent_idx)
-	WHERE confirmed_ins.tx_id IS NOT NULL) -- The use of LEFT JOIN is intentional, it forces postgres to use a specific index
-	UPDATE txs t SET mempool='f', replaced_by=q.confirmed_tx_id
-	FROM q
-	WHERE t.code=q.code AND t.tx_id=q.mempool_tx_id;
+	FOR r IN
+	  WITH q AS (
+	  SELECT mempool_ins.code, mempool_ins.tx_id mempool_tx_id, confirmed_ins.tx_id confirmed_tx_id
+	  FROM 
+		(SELECT i.code, i.spent_tx_id, i.spent_idx, t.tx_id FROM ins i
+		JOIN txs t ON t.code=i.code AND t.tx_id=i.input_tx_id
+		WHERE i.code=in_code AND t.mempool IS TRUE) mempool_ins
+	  LEFT JOIN (
+		SELECT i.code, i.spent_tx_id, i.spent_idx, t.tx_id FROM ins i
+		JOIN txs t ON t.code=i.code AND t.tx_id=i.input_tx_id
+		WHERE i.code=in_code AND t.blk_id IS NOT NULL
+	  ) confirmed_ins USING (code, spent_tx_id, spent_idx)
+	  WHERE confirmed_ins.tx_id IS NOT NULL) -- The use of LEFT JOIN is intentional, it forces postgres to use a specific index
+	  UPDATE txs t SET mempool='f', replaced_by=q.confirmed_tx_id
+	  FROM q
+	  WHERE t.code=q.code AND t.tx_id=q.mempool_tx_id
+	  RETURNING t.code, t.tx_id, t.replaced_by
+	LOOP
+	  -- Update also the replaced_by of all descendants
+	  WITH RECURSIVE cte(code, tx_id) AS
+	  (
+		  SELECT  t.code, t.tx_id FROM txs t
+		  WHERE
+			  t.code=r.code AND
+			  t.tx_id=r.tx_id
+		  UNION
+		  SELECT t.code, t.tx_id FROM cte c
+		  JOIN outs o USING (code, tx_id)
+		  JOIN ins i ON i.code=c.code AND i.spent_tx_id=o.tx_id AND i.spent_idx=o.idx
+		  JOIN txs t ON t.code=c.code AND t.tx_id=i.input_tx_id
+		  WHERE t.code=c.code AND t.mempool IS TRUE
+	  )
+	  UPDATE txs t SET mempool='f'
+	  FROM cte
+	  WHERE cte.code=t.code AND cte.tx_id=t.tx_id;
+	END LOOP;
+
 
 
 	-- Turn spent_blk_id for outputs which has been spent
@@ -309,3 +334,4 @@ SELECT
 	COALESCE(SUM(value) FILTER (WHERE immature IS TRUE), 0) immature_balance
 FROM wallets_utxos
 GROUP BY wallet_id, code;
+

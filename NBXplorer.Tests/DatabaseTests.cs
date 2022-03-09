@@ -143,6 +143,38 @@ namespace NBXplorer.Tests
 		}
 
 		[Fact]
+		public async Task CanMempoolPropagate()
+		{
+			await using var conn = await GetConnection();
+			// t1 get spent by t2 then t2 by t3. But then, t4 double spend t2 and get validated.
+			// So t2 and t3 should get out of mempool.
+			await conn.ExecuteAsync(
+				"INSERT INTO txs (code, tx_id, mempool) VALUES ('BTC', 't1', 't'), ('BTC', 't2', 't'), ('BTC', 't3', 't'), ('BTC', 't4', 't');" +
+				"INSERT INTO scripts VALUES ('BTC', 'script', '');" +
+				"INSERT INTO outs (code, tx_id, idx, script, value) VALUES ('BTC', 't1', 0, 'script', 5), ('BTC', 't2', 0, 'script', 5);" +
+				"INSERT INTO ins VALUES ('BTC', 't2', 0, 't1', 0), ('BTC', 't3', 0, 't2', 0), ('BTC', 't4', 0, 't1', 0);" +
+				"INSERT INTO blks (code, blk_id, height, prev_id) VALUES ('BTC', 'b1', 1, 'b0');" +
+				"INSERT INTO txs_blks (code, blk_id, tx_id) VALUES ('BTC', 'b1', 't4'), ('BTC', 'b1', 't1');" +
+				"CALL new_block_updated('BTC', 0);");
+
+			var t3 = await conn.QueryFirstAsync("SELECT * FROM txs WHERE tx_id='t3'");
+			Assert.False(t3.mempool);
+			Assert.Null(t3.blk_id);
+
+			var t2 = await conn.QueryFirstAsync("SELECT * FROM txs WHERE tx_id='t2'");
+			Assert.False(t2.mempool);
+			Assert.Null(t2.blk_id);
+
+			var t1 = await conn.QueryFirstAsync("SELECT * FROM txs WHERE tx_id='t1'");
+			Assert.False(t1.mempool);
+			Assert.Equal("b1", t1.blk_id);
+
+			var t4 = await conn.QueryFirstAsync("SELECT * FROM txs WHERE tx_id='t4'");
+			Assert.False(t4.mempool);
+			Assert.Equal("b1", t4.blk_id);
+		}
+
+		[Fact]
 		public async Task CanCalculateUTXO2()
 		{
 			await using var conn = await GetConnection();
