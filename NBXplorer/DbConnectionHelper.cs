@@ -76,7 +76,7 @@ namespace NBXplorer
 			var dbCommand = Connection.CreateCommand();
 			int idx = 0;
 			StringBuilder builder = new StringBuilder();
-			builder.Append("INSERT INTO outs VALUES ");
+			builder.Append("INSERT INTO outs (code, tx_id, idx, script, value, immature) VALUES ");
 			foreach (var o in outs)
 			{
 				if (idx != 0)

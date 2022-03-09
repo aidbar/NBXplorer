@@ -185,6 +185,8 @@ CREATE TABLE IF NOT EXISTS outs (
   idx BIGINT NOT NULL,
   script TEXT NOT NULL,
   value BIGINT NOT NULL,
+  -- Allow multi asset support (Liquid)
+  asset_id TEXT DEFAULT NULL,
   immature BOOLEAN DEFAULT 'f',
   spent_blk_id TEXT DEFAULT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -211,7 +213,7 @@ DROP TRIGGER IF EXISTS outs_set_scripts_used on outs;
 CREATE TRIGGER outs_set_scripts_used AFTER INSERT ON outs FOR EACH ROW EXECUTE PROCEDURE set_scripts_used();
   
 ALTER TABLE outs DROP CONSTRAINT IF EXISTS outs_pkey CASCADE;
-CREATE UNIQUE INDEX IF NOT EXISTS outs_pkey ON outs (code, tx_id, idx) INCLUDE (script, value);
+CREATE UNIQUE INDEX IF NOT EXISTS outs_pkey ON outs (code, tx_id, idx) INCLUDE (script, value, asset_id);
 ALTER TABLE outs ADD CONSTRAINT outs_pkey PRIMARY KEY USING INDEX outs_pkey;
 
 CREATE TABLE IF NOT EXISTS ins (
@@ -285,11 +287,11 @@ INNER JOIN scripts s USING (code, script);
 -- WHERE blk_id IS NOT NULL OR (mempool IS TRUE AND replaced_by IS NULL)
 -- ORDER BY seen_at
 CREATE OR REPLACE VIEW ins_outs AS
-SELECT o.code, o.tx_id, t.blk_id, 'OUTPUT' source, o.tx_id out_tx_id, o.idx, o.script, o.value, o.immature, t.mempool, t.replaced_by, t.seen_at
+SELECT o.code, o.tx_id, t.blk_id, 'OUTPUT' source, o.tx_id out_tx_id, o.idx, o.script, o.value, o.asset_id, o.immature, t.mempool, t.replaced_by, t.seen_at
 FROM outs o
 JOIN txs t USING (code, tx_id)
 UNION ALL
-SELECT i.code, i.input_tx_id tx_id, t.blk_id, 'INPUT', i.spent_tx_id out_tx_id, i.spent_idx, o.script, o.value, 'f', t.mempool, t.replaced_by, t.seen_at
+SELECT i.code, i.input_tx_id tx_id, t.blk_id, 'INPUT', i.spent_tx_id out_tx_id, i.spent_idx, o.script, o.value, o.asset_id, 'f', t.mempool, t.replaced_by, t.seen_at
 FROM ins i
 JOIN outs o ON i.code=o.code AND i.spent_tx_id=o.tx_id AND i.spent_idx=o.idx
 JOIN txs t ON i.code=t.code AND i.input_tx_id=t.tx_id;
@@ -326,6 +328,7 @@ CREATE OR REPLACE VIEW wallets_balances AS
 SELECT
 	wallet_id,
 	code,
+	asset_id,
 	-- The balance if all unconfirmed transactions, non-conflicting, were finally confirmed
 	COALESCE(SUM(value) FILTER (WHERE spent_mempool IS FALSE), 0) unconfirmed_balance,
 	-- The balance only taking into accounts confirmed transactions
@@ -335,7 +338,7 @@ SELECT
 	-- The total value of immature utxos (utxos from a miner aged less than 100 blocks)
 	COALESCE(SUM(value) FILTER (WHERE immature IS TRUE), 0) immature_balance
 FROM wallets_utxos
-GROUP BY wallet_id, code;
+GROUP BY wallet_id, code, asset_id;
 
 -- Only used for double spending detection
 CREATE TABLE IF NOT EXISTS spent_outs (
