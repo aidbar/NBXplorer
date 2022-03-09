@@ -911,16 +911,6 @@ namespace NBXplorer.Controllers
 			return change;
 		}
 
-		private static bool IsMatching(TrackedSource trackedSource, Script s, AnnotatedTransactionCollection transactions)
-		{
-			if (trackedSource is DerivationSchemeTrackedSource dsts)
-				return transactions.GetKeyPath(s) != null;
-			else if (trackedSource is IDestination addr)
-				return addr.ScriptPubKey == s;
-			else
-				throw new NotSupportedException();
-		}
-
 		int MaxHeight = int.MaxValue;
 
 		private void FillUTXOsInformation(List<UTXO> utxos, AnnotatedTransactionCollection transactions, int currentHeight)

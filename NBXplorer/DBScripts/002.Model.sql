@@ -102,7 +102,7 @@ BEGIN
 		  JOIN txs t ON t.code=c.code AND t.tx_id=i.input_tx_id
 		  WHERE t.code=c.code AND t.mempool IS TRUE
 	  )
-	  UPDATE txs t SET mempool='f'
+	  UPDATE txs t SET mempool='f', replaced_by=r.replaced_by
 	  FROM cte
 	  WHERE cte.code=t.code AND cte.tx_id=t.tx_id;
 	END LOOP;
@@ -279,18 +279,20 @@ SELECT s.code, s.script, s.addr, ws.wallet_id, 'EXPLICIT' source, NULL, NULL, NU
 FROM wallets_scripts ws
 INNER JOIN scripts s USING (code, script);
 
--- Returns a log of inputs and outputs, order by seen_at advised
+-- Returns a log of inputs and outputs, 
+-- If you want a view of the current in_outs wihtout conflict use
+-- SELECT * FROM ins_outs
+-- WHERE blk_id IS NOT NULL OR (mempool IS TRUE AND replaced_by IS NULL)
+-- ORDER BY seen_at
 CREATE OR REPLACE VIEW ins_outs AS
-SELECT * FROM 
-(SELECT o.code, o.tx_id, t.blk_id, 'OUTPUT' source, o.tx_id out_tx_id, o.idx, o.script, o.value, o.immature, t.mempool, t.replaced_by, t.seen_at
+SELECT o.code, o.tx_id, t.blk_id, 'OUTPUT' source, o.tx_id out_tx_id, o.idx, o.script, o.value, o.immature, t.mempool, t.replaced_by, t.seen_at
 FROM outs o
 JOIN txs t USING (code, tx_id)
 UNION ALL
 SELECT i.code, i.input_tx_id tx_id, t.blk_id, 'INPUT', i.spent_tx_id out_tx_id, i.spent_idx, o.script, o.value, 'f', t.mempool, t.replaced_by, t.seen_at
 FROM ins i
 JOIN outs o ON i.code=o.code AND i.spent_tx_id=o.tx_id AND i.spent_idx=o.idx
-JOIN txs t ON i.code=t.code AND i.input_tx_id=t.tx_id) q
-WHERE (blk_id IS NOT NULL OR (mempool IS TRUE AND replaced_by IS NULL));
+JOIN txs t ON i.code=t.code AND i.input_tx_id=t.tx_id;
 
 -- Returns current UTXOs
 -- Warning: It also returns the UTXO that are confirmed but spent in the mempool, as well as immature utxos.
@@ -302,7 +304,7 @@ WITH current_ins AS
 	JOIN txs ti ON i.code = ti.code AND i.input_tx_id = ti.tx_id
 	WHERE ti.blk_id IS NOT NULL OR (ti.mempool IS TRUE AND ti.replaced_by IS NULL)
 )
-SELECT o.*, ob.blk_id, ob.height, i.input_tx_id spending_tx_id, i.input_idx spending_idx, txo.mempool mempool, (i.mempool IS TRUE) spent_mempool FROM outs o
+SELECT o.*, ob.blk_id, ob.height, i.input_tx_id spending_tx_id, i.input_idx spending_idx, txo.mempool mempool, (i.mempool IS TRUE) spent_mempool, txo.seen_at tx_seen_at FROM outs o
 JOIN txs txo USING (code, tx_id)
 LEFT JOIN blks ob USING (code, blk_id)
 LEFT JOIN current_ins i ON o.code = i.code AND o.tx_id = i.spent_tx_id AND o.idx = i.spent_idx
@@ -335,3 +337,63 @@ SELECT
 FROM wallets_utxos
 GROUP BY wallet_id, code;
 
+-- Only used for double spending detection
+CREATE TABLE IF NOT EXISTS spent_outs (
+  code TEXT NOT NULL,
+  tx_id TEXT NOT NULL,
+  idx TEXT NOT NULL,
+  spent_by TEXT NOT NULL,
+  prev_spent_by TEXT DEFAULT NULL,
+  spent_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (code, tx_id, idx),
+  FOREIGN KEY (code, spent_by) REFERENCES txs ON DELETE CASCADE,
+  FOREIGN KEY (code, prev_spent_by) REFERENCES txs ON DELETE CASCADE
+);
+
+
+CREATE OR REPLACE PROCEDURE add_ins(in_ins ins[])
+AS $$
+DECLARE
+	r RECORD;
+BEGIN
+	FOR r IN 
+		INSERT INTO spent_outs AS so
+		SELECT code, spent_tx_id, spent_idx, input_tx_id FROM unnest(in_ins)
+		ON CONFLICT (code, tx_id, idx) DO UPDATE SET spent_by=EXCLUDED.spent_by, prev_spent_by=so.spent_by
+		RETURNING *
+	LOOP
+		IF r.prev_spent_by IS NOT NULL AND r.prev_spent_by != r.spent_by THEN
+			-- Make the other tx replaced
+			UPDATE txs t SET replaced_by=r.spent_by
+			WHERE t.code=r.code AND t.tx_id=r.prev_spent_by AND t.mempool IS TRUE;
+
+			-- Make sure this tx isn't replaced
+			UPDATE txs t SET replaced_by=NULL
+			WHERE t.code=r.code AND t.tx_id=r.spent_by AND t.mempool IS TRUE;
+
+			-- Propagate to the children
+			WITH RECURSIVE cte(code, tx_id) AS
+			(
+			  SELECT  t.code, t.tx_id FROM txs t
+			  WHERE
+				  t.code=r.code AND
+				  t.tx_id=r.prev_spent_by
+			  UNION
+			  SELECT t.code, t.tx_id FROM cte c
+			  JOIN outs o USING (code, tx_id)
+			  JOIN ins i ON i.code=c.code AND i.spent_tx_id=o.tx_id AND i.spent_idx=o.idx
+			  JOIN txs t ON t.code=c.code AND t.tx_id=i.input_tx_id
+			  WHERE t.code=c.code AND t.mempool IS TRUE
+			)
+			UPDATE txs t SET replaced_by=r.spent_by
+			FROM cte
+			WHERE cte.code=t.code AND cte.tx_id=t.tx_id;
+		END IF;
+	END LOOP;
+	
+	INSERT INTO ins 
+		SELECT i.* FROM
+		(SELECT * FROM unnest(in_ins)) i (code, input_tx_id, input_idx, spent_tx_id, spent_idx)
+		JOIN outs o ON i.code=o.code AND i.spent_tx_id=o.tx_id AND i.spent_idx=o.idx ON CONFLICT DO NOTHING;
+END;
+$$ LANGUAGE plpgsql;

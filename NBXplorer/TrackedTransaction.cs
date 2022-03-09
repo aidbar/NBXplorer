@@ -158,9 +158,13 @@ namespace NBXplorer
 				throw new InvalidOperationException("IndexOfInput need access to the underlying transaction");
 			if (inputsIndexes is null)
 			{
-				inputsIndexes = new Dictionary<OutPoint, int>(SpentOutpoints.Count);
-				foreach (var outpoint in SpentOutpoints)
-					inputsIndexes.Add(outpoint, Transaction.Inputs.FindIndex(o => o.PrevOut == outpoint));
+				inputsIndexes = new Dictionary<OutPoint, int>(Transaction.Inputs.Count);
+				int i = 0;
+				foreach (var outpoint in Transaction.Inputs.Select(i => i.PrevOut))
+				{
+					inputsIndexes.Add(outpoint, i);
+					i++;
+				}
 			}
 			return inputsIndexes[spent];
 		}

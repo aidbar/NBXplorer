@@ -55,20 +55,18 @@ namespace NBXplorer
 			var dbCommand = Connection.CreateCommand();
 			int idx = 0;
 			StringBuilder builder = new StringBuilder();
-			builder.Append("INSERT INTO ins SELECT i.* FROM (VALUES ");
+			builder.Append("CALL add_ins(ARRAY[");
 			foreach (var i in ins)
 			{
 				if (idx != 0)
 					builder.Append(',');
 				// No injection possible, those are strongly typed
-				builder.Append($"('{Network.CryptoCode}', '{i.inputTxId}', {i.inputIdx}, '{i.spentOutpoint.Hash}', {i.spentOutpoint.N})");
+				builder.Append($"ROW('{Network.CryptoCode}', '{i.inputTxId}', {i.inputIdx}, '{i.spentOutpoint.Hash}', {i.spentOutpoint.N})::ins");
 				idx++;
 			}
 			if (idx == 0)
 				return;
-			builder.Append(
-				") i (code, input_tx_id, input_idx, spent_tx_id, spent_idx) " +
-				"JOIN outs o ON i.code=o.code AND i.spent_tx_id=o.tx_id AND i.spent_idx=o.idx ON CONFLICT DO NOTHING");
+			builder.Append("]);");
 			dbCommand.CommandText = builder.ToString();
 			await dbCommand.ExecuteNonQueryAsync();
 		}
@@ -188,6 +186,8 @@ namespace NBXplorer
 			int idx = 0;
 			foreach (var o in outPoints)
 			{
+				if (idx != 0)
+					builder.Append(',');
 				builder.Append($"('{Network.CryptoCode}', '{o.Hash}', {o.N})");
 				idx++;
 			}

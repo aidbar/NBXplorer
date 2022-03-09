@@ -69,6 +69,54 @@ namespace NBXplorer.Tests
 		}
 
 		[Fact]
+		public async Task CanDetectDoubleSpending()
+		{
+			await using var conn = await GetConnection();
+			// t0 has an output, then t1 spend it, followed by t2.
+			// t1 should be marked replaced_by
+			// then t3 spend the input
+			// t2 should be marked replaced_by
+			await conn.ExecuteAsync(
+				"INSERT INTO txs (code, tx_id, mempool) VALUES ('BTC', 't0', 't'), ('BTC', 't1', 't'),  ('BTC', 't2', 't'), ('BTC', 't3', 't'), ('BTC', 't4', 't'), ('BTC', 't5', 't');" +
+				"INSERT INTO scripts VALUES ('BTC', 'a1', '');" + 
+				"INSERT INTO outs VALUES('BTC', 't0', 10, 'a1', 5);" + 
+				"CALL add_ins(ARRAY[ROW('BTC', 't1', 0, 't0', 10)::ins]);" +
+				"CALL add_ins(ARRAY[ROW('BTC', 't2', 0, 't0', 10)::ins]);"
+				);
+
+			var t1 = await conn.QueryFirstAsync("SELECT * FROM txs WHERE tx_id='t1'");
+			Assert.True(t1.mempool);
+			Assert.Equal("t2", t1.replaced_by);
+
+			var t2 = await conn.QueryFirstAsync("SELECT * FROM txs WHERE tx_id='t2'");
+			Assert.True(t2.mempool);
+			Assert.Null(t2.replaced_by);
+
+			await conn.ExecuteAsync("CALL add_ins(ARRAY[ROW('BTC', 't3', 0, 't0', 10)::ins]);");
+			t2 = await conn.QueryFirstAsync("SELECT * FROM txs WHERE tx_id='t2'");
+			Assert.True(t2.mempool);
+			Assert.Equal("t3", t2.replaced_by);
+
+			// Does it propagate to other children? t3 get spent by t4 then t3 get double spent by t5.
+			// We expect t3 and t4 to be double spent
+			await conn.ExecuteAsync("INSERT INTO outs VALUES('BTC', 't3', 10, 'a1', 5);" +
+				"CALL add_ins(ARRAY[ROW('BTC', 't4', 0, 't3', 10)::ins]);" +
+				"CALL add_ins(ARRAY[ROW('BTC', 't5', 0, 't0', 10)::ins]);");
+
+			var t3 = await conn.QueryFirstAsync("SELECT * FROM txs WHERE tx_id='t3'");
+			Assert.True(t3.mempool);
+			Assert.Equal("t5", t3.replaced_by);
+
+			var t4 = await conn.QueryFirstAsync("SELECT * FROM txs WHERE tx_id='t4'");
+			Assert.True(t4.mempool);
+			Assert.Equal("t5", t4.replaced_by);
+
+			var t5 = await conn.QueryFirstAsync("SELECT * FROM txs WHERE tx_id='t5'");
+			Assert.True(t5.mempool);
+			Assert.Null(t5.replaced_by);
+		}
+
+		[Fact]
 		public async Task CanCalculateUTXO()
 		{
 			await using var conn = await GetConnection();
@@ -160,10 +208,12 @@ namespace NBXplorer.Tests
 			var t3 = await conn.QueryFirstAsync("SELECT * FROM txs WHERE tx_id='t3'");
 			Assert.False(t3.mempool);
 			Assert.Null(t3.blk_id);
+			Assert.Equal("t4", t3.replaced_by);
 
 			var t2 = await conn.QueryFirstAsync("SELECT * FROM txs WHERE tx_id='t2'");
 			Assert.False(t2.mempool);
 			Assert.Null(t2.blk_id);
+			Assert.Equal("t4", t2.replaced_by);
 
 			var t1 = await conn.QueryFirstAsync("SELECT * FROM txs WHERE tx_id='t1'");
 			Assert.False(t1.mempool);

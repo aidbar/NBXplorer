@@ -95,7 +95,7 @@ namespace NBXplorer.Controllers
 				string keypath,
 				bool mempool,
 				bool spent_mempool,
-				DateTime created_at)>($"SELECT height, tx_id, wu.idx, value, script, {column}, mempool, spent_mempool, created_at FROM wallets_utxos wu {join} WHERE code=@code AND wallet_id=@walletId AND immature IS FALSE", new { code = network.CryptoCode, walletId = trackedSource.GetLegacyWalletId(network) });
+				DateTime tx_seen_at)>($"SELECT height, tx_id, wu.idx, value, script, {column}, mempool, spent_mempool, tx_seen_at FROM wallets_utxos wu {join} WHERE code=@code AND wallet_id=@walletId AND immature IS FALSE", new { code = network.CryptoCode, walletId = trackedSource.GetLegacyWalletId(network) });
 			UTXOChanges changes = new UTXOChanges()
 			{
 				CurrentHeight = (int)height,
@@ -107,7 +107,7 @@ namespace NBXplorer.Controllers
 				var u = new UTXO()
 				{
 					Index = utxo.idx,
-					Timestamp = new DateTimeOffset(utxo.created_at),
+					Timestamp = new DateTimeOffset(utxo.tx_seen_at),
 					Value = Money.Satoshis(utxo.value),
 					ScriptPubKey = Script.FromHex(utxo.script),
 					TransactionHash = uint256.Parse(utxo.tx_id)

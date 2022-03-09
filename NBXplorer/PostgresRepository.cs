@@ -626,8 +626,10 @@ namespace NBXplorer
 						tx.IsCoinBase // We normalize this flag at every block, so even if it's mature, it doesn't matter.
 					));
 				await helper.InsertOuts(outs);
-				var ins = tx.SpentOutpoints
-					.Select(spent => (
+
+				var outpointList = tx.BlockHash is not null && tx.Transaction is Transaction t ?
+									t.Inputs.Skip(t.IsCoinBase ? 1 : 0).Select(i => i.PrevOut) : tx.SpentOutpoints;
+				var ins = outpointList.Select(spent => (
 						tx.TransactionHash,
 						tx.IndexOfInput(spent),
 						spent));
