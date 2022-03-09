@@ -8,11 +8,3 @@
 
 CREATE INDEX IF NOT EXISTS evts_id ON evts (id DESC);
 CREATE INDEX IF NOT EXISTS evts_code_id ON evts (code, id DESC);
-
-
-CREATE TABLE IF NOT EXISTS wallet_metadata (
-wallet_id TEXT NOT NULL REFERENCES wallets ON DELETE CASCADE,
-key TEXT NOT NULL,
-data JSONB NOT NULL,
-PRIMARY KEY (wallet_id, key)
-);

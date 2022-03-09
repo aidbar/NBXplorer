@@ -252,6 +252,7 @@ CREATE INDEX IF NOT EXISTS descriptors_scripts_code_script ON descriptors_script
 
 CREATE TABLE IF NOT EXISTS wallets (
   wallet_id TEXT NOT NULL PRIMARY KEY,
+  metadata JSONB DEFAULT NULL,
   created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP);
 
 -- A wallet can track a specific script, add those to this table
