@@ -11,6 +11,7 @@ using System;
 using System.Collections.Generic;
 using System.Data.Common;
 using System.Linq;
+using System.Text;
 using System.Threading.Tasks;
 
 namespace NBXplorer
@@ -49,10 +50,54 @@ namespace NBXplorer
 			return await Connection.ExecuteAsync("INSERT INTO wallets VALUES (@id) ON CONFLICT DO NOTHING", new { id = walletId }) == 1;
 		}
 
+		public async Task InsertIns(IEnumerable<(uint256 inputTxId, int inputIdx, OutPoint spentOutpoint)> ins)
+		{
+			var dbCommand = Connection.CreateCommand();
+			int idx = 0;
+			StringBuilder builder = new StringBuilder();
+			builder.Append("INSERT INTO ins SELECT i.* FROM (VALUES ");
+			foreach (var i in ins)
+			{
+				if (idx != 0)
+					builder.Append(',');
+				// No injection possible, those are strongly typed
+				builder.Append($"('{Network.CryptoCode}', '{i.inputTxId}', {i.inputIdx}, '{i.spentOutpoint.Hash}', {i.spentOutpoint.N})");
+				idx++;
+			}
+			if (idx == 0)
+				return;
+			builder.Append(
+				") i (code, input_tx_id, input_idx, spent_tx_id, spent_idx) " +
+				"JOIN outs o ON i.code=o.code AND i.spent_tx_id=o.tx_id AND i.spent_idx=o.idx ON CONFLICT DO NOTHING");
+			dbCommand.CommandText = builder.ToString();
+			await dbCommand.ExecuteNonQueryAsync();
+		}
+
+		public async Task InsertOuts(IEnumerable<(OutPoint outpoint, TxOut output, bool immature)> outs)
+		{
+			var dbCommand = Connection.CreateCommand();
+			int idx = 0;
+			StringBuilder builder = new StringBuilder();
+			builder.Append("INSERT INTO outs VALUES ");
+			foreach (var o in outs)
+			{
+				if (idx != 0)
+					builder.Append(',');
+				var immatureBool = o.immature ? "'t'" : "'f'";
+				builder.Append($"('{Network.CryptoCode}', '{o.outpoint.Hash}', {o.outpoint.N}, '{o.output.ScriptPubKey.ToHex()}', {o.output.Value.Satoshi}, {immatureBool})");
+				idx++;
+			}
+			if (idx == 0)
+				return;
+			builder.Append(" ON CONFLICT DO NOTHING;");
+			dbCommand.CommandText = builder.ToString();
+			await dbCommand.ExecuteNonQueryAsync();
+		}
 		public async Task SaveTransactions(IEnumerable<(Transaction? Transaction, uint256? Id, uint256? BlockId, int? BlockIndex)> transactions, DateTimeOffset? now)
 		{
 			var parameters = transactions.Select(tx =>
-			new {
+			new
+			{
 				code = Network.CryptoCode,
 				blk_id = tx.BlockId?.ToString(),
 				id = tx.Id?.ToString() ?? tx.Transaction?.GetHash()?.ToString(),
@@ -134,9 +179,31 @@ namespace NBXplorer
 		}
 
 		record SpentUTXORow(System.String code, System.String tx_id, System.Int32 idx, System.String script, System.Int64 value, System.Boolean immature, System.String spent_blk_id, System.DateTime created_at, System.String spent_outpoint);
-		public Task<Dictionary<OutPoint, TxOut>> GetOutputs(IList<OutPoint> outPoints)
+		public async Task<Dictionary<OutPoint, TxOut>> GetOutputs(IEnumerable<OutPoint> outPoints)
 		{
-			return GetOutputs(outPoints.Select(o => o.ToString()).ToArray());
+			Dictionary<OutPoint, TxOut> result = new Dictionary<OutPoint, TxOut>();
+			var command = Connection.CreateCommand();
+			var builder = new StringBuilder();
+			builder.Append("SELECT o.tx_id, o.idx, o.value, o.script FROM (VALUES ");
+			int idx = 0;
+			foreach (var o in outPoints)
+			{
+				builder.Append($"('{Network.CryptoCode}', '{o.Hash}', {o.N})");
+				idx++;
+			}
+			if (idx == 0)
+				return result;
+			builder.Append(") r (code, tx_id, idx) JOIN outs o USING (code, tx_id, idx);");
+			command.CommandText = builder.ToString();
+			using var reader = await command.ExecuteReaderAsync();
+			while (await reader.ReadAsync())
+			{
+				var txout = this.Network.NBitcoinNetwork.Consensus.ConsensusFactory.CreateTxOut();
+				txout.Value = Money.Satoshis(reader.GetInt64(2));
+				txout.ScriptPubKey = Script.FromHex(reader.GetString(3));
+				result.TryAdd(new OutPoint(uint256.Parse(reader.GetString(0)), reader.GetInt32(1)), txout);
+			}
+			return result;
 		}
 
 		record UnusedScriptRow(string script, string addr, string keypath);
@@ -167,20 +234,6 @@ namespace NBXplorer
 				Feature = KeyPathTemplates.GetDerivationFeature(keypath),
 				// TODO: Redeem = 
 			};
-		}
-		public async Task<Dictionary<OutPoint, TxOut>> GetOutputs(IList<string> outPoints)
-		{
-			Dictionary<OutPoint, TxOut> result = new Dictionary<OutPoint, TxOut>();
-			foreach (var row in await Connection.QueryAsync<SpentUTXORow>(
-"SELECT *, to_outpoint(tx_id, idx) spent_outpoint FROM outs " +
-"WHERE code = @code AND to_outpoint(tx_id, idx) = ANY(@outputQuery)", new { code = Network.CryptoCode, outputQuery = outPoints }))
-			{
-				var txout = this.Network.NBitcoinNetwork.Consensus.ConsensusFactory.CreateTxOut();
-				txout.Value = Money.Satoshis(row.value);
-				txout.ScriptPubKey = Script.FromBytesUnsafe(Encoders.Hex.DecodeData(row.script));
-				result.TryAdd(new OutPoint(uint256.Parse(row.tx_id), row.idx), txout);
-			}
-			return result;
 		}
 
 		record BlockRow(System.String blk_id, System.String prev_id, System.Int64 height);

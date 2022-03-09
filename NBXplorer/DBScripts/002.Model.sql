@@ -189,16 +189,6 @@ ALTER TABLE outs DROP CONSTRAINT IF EXISTS outs_pkey CASCADE;
 CREATE UNIQUE INDEX IF NOT EXISTS outs_pkey ON outs (code, tx_id, idx) INCLUDE (script, value);
 ALTER TABLE outs ADD CONSTRAINT outs_pkey PRIMARY KEY USING INDEX outs_pkey;
 
-CREATE OR REPLACE FUNCTION to_outpoint(in_tx_id TEXT, in_idx INT)
-RETURNS TEXT AS $$
-  SELECT $1 || '-' || $2
-$$  LANGUAGE SQL IMMUTABLE;
-
--- Can we remove this? We need this to make a SELECT... FROM.. IN () request including both tx_id and idx
--- maybe there is another solution though.
-CREATE INDEX IF NOT EXISTS outs_code_outpoint_idx ON outs (code, to_outpoint(tx_id, idx));
-
-
 CREATE TABLE IF NOT EXISTS ins (
   code TEXT NOT NULL,
   input_tx_id TEXT NOT NULL,

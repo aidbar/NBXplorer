@@ -15,6 +15,7 @@ using NBXplorer.Logging;
 using Microsoft.Extensions.Logging;
 using Npgsql;
 using NBitcoin.RPC;
+using System.Text;
 
 namespace NBXplorer
 {
@@ -215,17 +216,32 @@ namespace NBXplorer
 			MultiValueDictionary<Script, KeyPathInformation> result = new MultiValueDictionary<Script, KeyPathInformation>();
 			foreach (var s in scripts)
 				result.AddRange(s, Array.Empty<KeyPathInformation>());
-			foreach (var row in await connection.QueryAsync<(string script, string addr, string source, string descriptor, string keypath)>(
-				"SELECT script, addr, source, descriptor, keypath FROM tracked_scripts WHERE code=@code AND script=ANY(@scripts)", new { code = Network.CryptoCode, scripts = scripts.Select(s => s.ToHex()).ToList() }))
+			var command = connection.CreateCommand();
+			StringBuilder builder = new StringBuilder();
+			builder.Append("SELECT ts.script, ts.addr, ts.source, ts.descriptor, ts.keypath FROM ( VALUES ");
+			int idx = 0;
+			foreach (var s in scripts)
 			{
-
-				bool isDescriptor = row.source == "DESCRIPTOR";
-				bool isExplicit = row.source == "EXPLICIT";
-				var descriptor = isDescriptor ? Descriptor.Parse(row.descriptor, Network) : null;
-				var script = Script.FromHex(row.script);
+				if (idx != 0)
+					builder.Append(',');
+				builder.Append($"('{Network.CryptoCode}', '{s.ToHex()}')");
+				idx++;
+			}
+			if (idx == 0)
+				return result;
+			builder.Append(") r (code, script) JOIN tracked_scripts ts USING (code, script);");
+			command.CommandText = builder.ToString();
+			await using var reader = await command.ExecuteReaderAsync();
+			while (await reader.ReadAsync())
+			{
+				var source = reader.GetString(2);
+				bool isDescriptor = source == "DESCRIPTOR";
+				bool isExplicit = source == "EXPLICIT";
+				var descriptor = isDescriptor ? Descriptor.Parse(reader.GetString(3), Network) : null;
+				var script = Script.FromHex(reader.GetString(0));
 				var derivationStrategy = (descriptor as LegacyDescriptor)?.DerivationStrategy;
-				var addr = BitcoinAddress.Create(row.addr, Network.NBitcoinNetwork);
-				var keypath = isDescriptor ? KeyPath.Parse(row.keypath) : null;
+				var addr = BitcoinAddress.Create(reader.GetString(1), Network.NBitcoinNetwork);
+				var keypath = isDescriptor ? KeyPath.Parse(reader.GetString(4)) : null;
 				result.Add(script, new KeyPathInformation()
 				{
 					Address = addr,
@@ -234,8 +250,7 @@ namespace NBXplorer
 					ScriptPubKey = script,
 					TrackedSource = isDescriptor && derivationStrategy is not null ? new DerivationSchemeTrackedSource(derivationStrategy) :
 									isExplicit ? new AddressTrackedSource(addr) : null,
-					Feature = keypath is null ? DerivationFeature.Deposit : KeyPathTemplates.GetDerivationFeature(keypath),
-					// TODO: Redeem = 
+					Feature = keypath is null ? DerivationFeature.Deposit : KeyPathTemplates.GetDerivationFeature(keypath)
 				});
 			}
 			return result;
@@ -604,32 +619,18 @@ namespace NBXplorer
 			foreach (var tx in transactions)
 			{
 				var outs = tx.GetReceivedOutputs()
-					.Select(received =>
-					new
-					{
-						code = Network.CryptoCode,
-						tx_id = tx.TransactionHash.ToString(),
-						idx = received.Index,
-						scriptpubkey = received.ScriptPubKey.ToHex(),
-						val = ((Money)received.Value).Satoshi,
-						immature = tx.IsCoinBase
-					}).ToArray();
-				await connection.ExecuteAsync("INSERT INTO outs VALUES (@code, @tx_id, @idx, @scriptpubkey, @val, @immature) ON CONFLICT DO NOTHING", outs);
+					.Select(received => (
+						new OutPoint(tx.TransactionHash, received.Index),
+						new TxOut((Money)received.Value, received.ScriptPubKey),
+						tx.IsCoinBase // We normalize this flag at every block, so even if it's mature, it doesn't matter.
+					));
+				await helper.InsertOuts(outs);
 				var ins = tx.SpentOutpoints
-					.Select(spent => new
-					{
-						code = Network.CryptoCode,
-						input_tx_id = tx.TransactionHash.ToString(),
-						input_idx = tx.IndexOfInput(spent),
-						spent_tx_id = spent.Hash.ToString(),
-						spent_idx = (int)spent.N
-					})
-					.ToArray();
-				await connection.ExecuteAsync(
-					"INSERT INTO ins " +
-					"SELECT i.* FROM (VALUES (@code, @input_tx_id, @input_idx, @spent_tx_id, @spent_idx)) i " +
-					"WHERE EXISTS (SELECT FROM outs WHERE code = @code AND tx_id = @spent_tx_id AND idx = @spent_idx) FOR SHARE " +
-					"ON CONFLICT DO NOTHING", ins);
+					.Select(spent => (
+						tx.TransactionHash,
+						tx.IndexOfInput(spent),
+						spent));
+				await helper.InsertIns(ins);
 			}
 		}
 
