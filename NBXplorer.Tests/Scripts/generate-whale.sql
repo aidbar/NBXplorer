@@ -4,7 +4,7 @@ SELECT 'BTC', encode(sha256(('b-' || s)::bytea), 'hex') blk_id, s height, encode
 FROM generate_series(0, 223000) s;
 
 INSERT INTO txs
-SELECT 'BTC', encode(sha256(('t-' || s)::bytea), 'hex') tx_id, NULL, NULL, 0, 't'
+SELECT 'BTC', encode(sha256(('t-' || s)::bytea), 'hex') tx_id, NULL, NULL, 0, 't', NULL, CURRENT_TIMESTAMP -  interval '1 minute' * (223000 - s)
 FROM generate_series(0, 223000) s;
 
 INSERT INTO txs_blks

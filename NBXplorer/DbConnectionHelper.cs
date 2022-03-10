@@ -176,7 +176,6 @@ namespace NBXplorer
 			return toGenerate;
 		}
 
-		record SpentUTXORow(System.String code, System.String tx_id, System.Int32 idx, System.String script, System.Int64 value, System.Boolean immature, System.String spent_blk_id, System.DateTime created_at, System.String spent_outpoint);
 		public async Task<Dictionary<OutPoint, TxOut>> GetOutputs(IEnumerable<OutPoint> outPoints)
 		{
 			Dictionary<OutPoint, TxOut> result = new Dictionary<OutPoint, TxOut>();

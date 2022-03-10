@@ -16,14 +16,9 @@ CREATE TABLE IF NOT EXISTS txs (
   mempool BOOLEAN DEFAULT 't',
   replaced_by TEXT DEFAULT NULL,
   seen_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
- /*  PRIMARY KEY (code, tx_id) Handled by index below , */
+  PRIMARY KEY (code, tx_id),
  /*  FOREIGN KEY (code, replaced_by) REFERENCES txs ON DELETE SET NULL, */
   FOREIGN KEY (code, blk_id) REFERENCES blks ON DELETE SET NULL);
-
-CREATE UNIQUE INDEX IF NOT EXISTS txs_pkey ON txs (code, tx_id) INCLUDE (blk_id, mempool, replaced_by);
-
-ALTER TABLE txs DROP CONSTRAINT IF EXISTS txs_pkey CASCADE;
-ALTER TABLE txs ADD CONSTRAINT txs_pkey PRIMARY KEY USING INDEX txs_pkey;
 
 ALTER TABLE txs DROP CONSTRAINT IF EXISTS txs_code_replaced_by_fkey CASCADE;
 ALTER TABLE txs ADD CONSTRAINT txs_code_replaced_by_fkey FOREIGN KEY (code, replaced_by) REFERENCES txs (code, tx_id) ON DELETE SET NULL;
@@ -189,7 +184,6 @@ CREATE TABLE IF NOT EXISTS outs (
   asset_id TEXT DEFAULT NULL,
   immature BOOLEAN DEFAULT 'f',
   spent_blk_id TEXT DEFAULT NULL,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
   /* PRIMARY KEY (code, tx_id, idx) (enforced with index), */
   FOREIGN KEY (code, spent_blk_id) REFERENCES blks (code, blk_id) ON DELETE SET NULL,
   FOREIGN KEY (code, tx_id) REFERENCES txs ON DELETE CASCADE,
@@ -319,6 +313,7 @@ WHERE o.spent_blk_id IS NULL AND (txo.blk_id IS NOT NULL OR (txo.mempool IS TRUE
 --          If you want the available UTXOs which can be spent use 'WHERE spent_mempool IS FALSE AND immature IS FALSE'.
 CREATE OR REPLACE VIEW wallets_utxos AS
 SELECT q.wallet_id, u.* FROM utxos u,
+-- Note that using DISTINCT here drastically improve perf... unsure why
 LATERAL (SELECT DISTINCT ts.wallet_id, ts.code, ts.script
 		 FROM tracked_scripts ts
          WHERE ts.code = u.code AND ts.script = u.script) q;
