@@ -330,7 +330,9 @@ WHERE o.spent_blk_id IS NULL AND (txo.blk_id IS NOT NULL OR (txo.mempool IS TRUE
 --          If you want the available UTXOs which can be spent use 'WHERE spent_mempool IS FALSE AND immature IS FALSE'.
 CREATE OR REPLACE VIEW wallets_utxos AS
 SELECT q.wallet_id, u.* FROM utxos u,
--- Note that using DISTINCT here drastically improve perf... unsure why
+-- Note that using LATERAL SELECT DISTINCT is necessary to force postgres to use 'utxos' as outer table for the join.
+-- Since utxos doesn't have lot's of record, this is the cheapest way.
+-- Without this hack, postgres attempt to optimize by making 'wallets_scripts' as outer table, which mean full scan over wallets_scripts and wallets_scripts has lots of rows...
 LATERAL (SELECT DISTINCT ws.wallet_id, ws.code, ws.script
 		 FROM wallets_scripts ws
          WHERE ws.code = u.code AND ws.script = u.script) q;
