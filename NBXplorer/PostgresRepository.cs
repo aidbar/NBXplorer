@@ -679,7 +679,7 @@ namespace NBXplorer
 			await conn.Connection.ExecuteAsync(
 				"INSERT INTO wallets VALUES (@walletId) ON CONFLICT DO NOTHING;" +
 				"INSERT INTO scripts VALUES (@code, @script, @addr) ON CONFLICT DO NOTHING;" +
-				"INSERT INTO wallets_scripts VALUES (@code, @script, @walletId) ON CONFLICT DO NOTHING"
+				"INSERT INTO wallets_explicit_scripts VALUES (@code, @walletId, @script) ON CONFLICT DO NOTHING"
 				, new { code = Network.CryptoCode, script = address.ScriptPubKey.ToHex(), addr = address.ScriptPubKey.GetDestinationAddress(Network.NBitcoinNetwork).ToString(), walletId });
 		}
 

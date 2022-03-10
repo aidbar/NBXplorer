@@ -7,8 +7,8 @@ INSERT INTO txs
 SELECT 'BTC', encode(sha256(('t-' || s)::bytea), 'hex') tx_id, NULL, NULL, 0, 't', NULL, CURRENT_TIMESTAMP -  interval '1 minute' * (223000 - s)
 FROM generate_series(0, 223000) s;
 
-INSERT INTO txs_blks
-SELECT 'BTC', encode(sha256(('t-' || s)::bytea), 'hex') tx_id,  encode(sha256(('b-' || s)::bytea), 'hex') tx_id, 0
+INSERT INTO blks_txs
+SELECT 'BTC', encode(sha256(('b-' || s)::bytea), 'hex') blk_id, encode(sha256(('t-' || s)::bytea), 'hex') tx_id, 0
 FROM generate_series(0, 223000) s;
 
 INSERT INTO scripts
@@ -28,7 +28,7 @@ WHERE MOD(s, 2) = 1;
 
 INSERT INTO wallets VALUES ('WHALE');
 INSERT INTO descriptors VALUES ('BTC', 'WHALEDESC', 0);
-INSERT INTO descriptors_wallets VALUES ('BTC', 'WHALEDESC', 'WHALE');
+INSERT INTO wallets_descriptors VALUES ('BTC', 'WHALE', 'WHALEDESC');
 
 INSERT INTO descriptors_scripts
 SELECT 'BTC', 'WHALEDESC', s, encode(sha256(('s-' || s)::bytea), 'hex') script, s

@@ -110,14 +110,14 @@ namespace NBXplorer
 				await Connection.ExecuteAsync("INSERT INTO txs VALUES (@code, @id, @raw) ON CONFLICT (code, tx_id) DO UPDATE SET raw = COALESCE(@raw, txs.raw)", parameters);
 			else
 				await Connection.ExecuteAsync("INSERT INTO txs VALUES (@code, @id, @raw, @blk_id, @blk_idx, @mempool, NULL, @seen_at) ON CONFLICT (code, tx_id) DO UPDATE SET seen_at=LEAST(@seen_at, txs.seen_at), raw = COALESCE(@raw, txs.raw)", parameters);
-			await Connection.ExecuteAsync("INSERT INTO txs_blks VALUES (@code, @id, @blk_id, @blk_idx) ON CONFLICT DO NOTHING", parameters.Where(p => p.blk_id is not null).AsList());
+			await Connection.ExecuteAsync("INSERT INTO blks_txs VALUES (@code, @blk_id, @id, @blk_idx) ON CONFLICT DO NOTHING", parameters.Where(p => p.blk_id is not null).AsList());
 		}
 		public async Task CreateDescriptors(string walletId, Descriptor[] descriptors)
 		{
 			var rows = descriptors.Select(c => new { code = Network.CryptoCode, descriptor = c.ToString(), walletId }).ToArray();
 			await Connection.ExecuteAsync(
 				"INSERT INTO descriptors VALUES (@code, @descriptor) ON CONFLICT DO NOTHING;" +
-				"INSERT INTO descriptors_wallets VALUES (@code, @descriptor, @walletId) ON CONFLICT DO NOTHING", rows);
+				"INSERT INTO wallets_descriptors VALUES (@code, @walletId, @descriptor) ON CONFLICT DO NOTHING", rows);
 		}
 		record DescriptorScriptInsert(string code, string descriptor, int idx, string script, string keypath, string addr);
 		public async Task<int> GenerateAddresses(Descriptor descriptor, GenerateAddressQuery? query)

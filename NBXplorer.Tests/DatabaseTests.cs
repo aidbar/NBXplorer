@@ -123,14 +123,14 @@ namespace NBXplorer.Tests
 			await conn.ExecuteAsync(
 				"INSERT INTO wallets VALUES ('Alice');" +
 				"INSERT INTO scripts VALUES ('BTC', 'a1', '');" +
-				"INSERT INTO wallets_scripts (code, wallet_id, script) VALUES ('BTC', 'Alice', 'a1');" +
+				"INSERT INTO wallets_explicit_scripts VALUES ('BTC', 'Alice', 'a1');" +
 				"INSERT INTO txs (code, tx_id, mempool) VALUES ('BTC', 't1', 't');" +
 				"INSERT INTO outs VALUES('BTC', 't1', 10, 'a1', 5); ");
 			Assert.Single(await conn.QueryAsync("SELECT * FROM wallets_utxos WHERE wallet_id='Alice'"));
 
 			await conn.ExecuteAsync(
 				"INSERT INTO blks VALUES ('BTC', 'b1', 0, 'b0');" +
-				"INSERT INTO txs_blks (code, tx_id, blk_id) VALUES ('BTC', 't1', 'b1');" +
+				"INSERT INTO blks_txs (code, tx_id, blk_id) VALUES ('BTC', 't1', 'b1');" +
 				"CALL new_block_updated('BTC', 0);");
 
 			Assert.Equal("b1", conn.ExecuteScalar<string>("SELECT blk_id FROM txs WHERE tx_id='t1'"));
@@ -150,7 +150,7 @@ namespace NBXplorer.Tests
 
 			await conn.ExecuteAsync(
 				"INSERT INTO blks VALUES ('BTC', 'b2', 0, 'b0');" +
-				"INSERT INTO txs_blks (code, tx_id, blk_id) VALUES ('BTC', 't1', 'b2');" +
+				"INSERT INTO blks_txs (code, tx_id, blk_id) VALUES ('BTC', 't1', 'b2');" +
 				"CALL new_block_updated('BTC', 0);");
 
 			balance = conn.QuerySingle("SELECT * FROM wallets_balances WHERE wallet_id='Alice';");
@@ -178,7 +178,7 @@ namespace NBXplorer.Tests
 
 			await conn.ExecuteAsync(
 				"INSERT INTO blks VALUES ('BTC', 'b3', 1, 'b2');" +
-				"INSERT INTO txs_blks (code, tx_id, blk_id) VALUES ('BTC', 't2', 'b3');" +
+				"INSERT INTO blks_txs (code, tx_id, blk_id) VALUES ('BTC', 't2', 'b3');" +
 				"CALL new_block_updated('BTC', 0);");
 
 			balance = conn.QuerySingleOrDefault("SELECT * FROM wallets_balances WHERE wallet_id='Alice';");
@@ -202,7 +202,7 @@ namespace NBXplorer.Tests
 				"INSERT INTO outs (code, tx_id, idx, script, value) VALUES ('BTC', 't1', 0, 'script', 5), ('BTC', 't2', 0, 'script', 5);" +
 				"INSERT INTO ins VALUES ('BTC', 't2', 0, 't1', 0), ('BTC', 't3', 0, 't2', 0), ('BTC', 't4', 0, 't1', 0);" +
 				"INSERT INTO blks (code, blk_id, height, prev_id) VALUES ('BTC', 'b1', 1, 'b0');" +
-				"INSERT INTO txs_blks (code, blk_id, tx_id) VALUES ('BTC', 'b1', 't4'), ('BTC', 'b1', 't1');" +
+				"INSERT INTO blks_txs (code, blk_id, tx_id) VALUES ('BTC', 'b1', 't4'), ('BTC', 'b1', 't1');" +
 				"CALL new_block_updated('BTC', 0);");
 
 			var t3 = await conn.QueryFirstAsync("SELECT * FROM txs WHERE tx_id='t3'");
@@ -237,7 +237,7 @@ namespace NBXplorer.Tests
 				"('BTC', 'bob1', '')," +
 				"('BTC', 'bob2', '')," +
 				"('BTC', 'bob3', '');" +
-				"INSERT INTO wallets_scripts(code, wallet_id, script) VALUES " +
+				"INSERT INTO wallets_explicit_scripts VALUES " +
 				"('BTC', 'Alice', 'alice1')," +
 				"('BTC', 'Alice', 'alice2')," +
 				"('BTC', 'Alice', 'alice3')," +
@@ -253,7 +253,7 @@ namespace NBXplorer.Tests
 				"('BTC', 't1', 1, 'alice1', 50), " +
 				"('BTC', 't1', 2, 'bob1', 40);" +
 				"INSERT INTO blks VALUES ('BTC', 'b1', 1, 'b0');" +
-				"INSERT INTO txs_blks (code, blk_id, tx_id) VALUES ('BTC', 'b1', 't1');");
+				"INSERT INTO blks_txs (code, blk_id, tx_id) VALUES ('BTC', 'b1', 't1');");
 
 			// alice spend her coin, get change back, 2 outputs to bob
 			await conn.ExecuteAsync(
@@ -264,7 +264,7 @@ namespace NBXplorer.Tests
 				"('BTC', 't2', 1, 'bob3', 39)," +
 				"('BTC', 't2', 2, 'alice2', 1);" +
 				"INSERT INTO blks VALUES ('BTC', 'b2', 2, 'b1');" +
-				"INSERT INTO txs_blks (code, blk_id, tx_id) VALUES ('BTC', 'b2', 't2');" +
+				"INSERT INTO blks_txs (code, blk_id, tx_id) VALUES ('BTC', 'b2', 't2');" +
 				"CALL new_block_updated('BTC', 0);");
 
 			await AssertBalance(conn, "b2", "b1");
@@ -272,14 +272,14 @@ namespace NBXplorer.Tests
 			// Replayed on different block.
 			await conn.ExecuteAsync(
 				"INSERT INTO blks VALUES ('BTC', 'b1-2', 1, 'b0'), ('BTC', 'b2-2', 2, 'b1-2');" +
-				"INSERT INTO txs_blks (code, blk_id, tx_id) VALUES ('BTC', 'b1-2', 't1'), ('BTC', 'b2-2', 't2');" +
+				"INSERT INTO blks_txs (code, blk_id, tx_id) VALUES ('BTC', 'b1-2', 't1'), ('BTC', 'b2-2', 't2');" +
 				"CALL new_block_updated('BTC', 0);");
 			await AssertBalance(conn, "b2-2", "b1-2");
 
 			// And again!
 			await conn.ExecuteAsync(
 				"INSERT INTO blks VALUES ('BTC', 'b1-3', 1, 'b0'), ('BTC', 'b2-3', 2, 'b1-3');" +
-				"INSERT INTO txs_blks (code, blk_id, tx_id) VALUES ('BTC', 'b1-3', 't1'), ('BTC', 'b2-3', 't2');" +
+				"INSERT INTO blks_txs (code, blk_id, tx_id) VALUES ('BTC', 'b1-3', 't1'), ('BTC', 'b2-3', 't2');" +
 				"CALL new_block_updated('BTC', 0);");
 			await AssertBalance(conn, "b2-3", "b1-3");
 
@@ -289,7 +289,7 @@ namespace NBXplorer.Tests
 				"INSERT INTO ins VALUES " +
 				"('BTC', 'ds', 0, 't1', 1);" + // This one double spend t2
 				"INSERT INTO blks VALUES ('BTC', 'bs', 1, 'b0');" +
-				"INSERT INTO txs_blks (code, blk_id, tx_id) VALUES ('BTC', 'bs', 'ds');" +
+				"INSERT INTO blks_txs (code, blk_id, tx_id) VALUES ('BTC', 'bs', 'ds');" +
 				"CALL new_block_updated('BTC', 0);");
 
 			// Alice should have her t1 output spent by the confirmed bs, so she has nothing left
@@ -386,64 +386,10 @@ namespace NBXplorer.Tests
 	}
 	static class Helper
 	{
-		public static async Task CreateWallet(this DbConnection db, string walletId)
-		{
-			await db.ExecuteAsync("INSERT INTO wallets VALUES (@walletid) ON CONFLICT DO NOTHING", new { walletid = walletId });
-		}
-		public static async Task AssertEmptyWallet(this DbConnection db, string walletId)
-		{
-			Assert.Empty(await GetUTXOs(db, walletId));
-		}
-
-		public record UTXORow(System.String code, System.String tx_id, System.Int32 idx, System.String script, System.Int64 value, System.String blk_id, System.Int64 height);
-		public static async Task<UTXORow[]> GetUTXOs(this DbConnection db, string walletId)
-		{
-			return (await db.QueryAsync<UTXORow>("SELECT code, tx_id, idx, script, value, blk_id, height FROM wallets_utxos WHERE code='BTC' AND wallet_id=@wid", new { wid = walletId })).ToArray();
-		}
-		public static async Task ConfirmTx(this DbConnection db, string block, string tx)
-		{
-			await AddBlock(db, block);
-			await AddTxToBlock(db, block, tx);
-		}
-
-		public static async Task AddTxToBlock(this DbConnection db, string block, string tx)
-		{
-			await db.ExecuteAsync("INSERT INTO txs_blks VALUES ('BTC', @tx, @blk)", new { blk = block, tx = tx });
-		}
-
-		public static async Task AddBlock(this DbConnection db, string block)
-		{
-			await db.ExecuteAsync("INSERT INTO blks VALUES ('BTC', @blk, 0, 'b0')", new { blk = block });
-		}
-
 		public static async Task Orphan(this DbConnection db, string block)
 		{
 			var height = await db.ExecuteScalarAsync<long>("SELECT height FROM blks WHERE blk_id=@block", new { block });
 			await db.ExecuteAsync("CALL orphan_blocks('BTC', @height);", new { height });
-		}
-		public static async Task AddWalletOutput(this DbConnection db, string walletId, string tx, int index, string scriptpubkey, int val)
-		{
-			await CreateTransaction(db, tx);
-			await AddOutput(db, tx, index, scriptpubkey, val);
-			await CreateWallet(db, walletId);
-			await db.ExecuteAsync("INSERT INTO wallets_scripts VALUES ('BTC', @script, @wallet_id) ON CONFLICT DO NOTHING", new { wallet_id = walletId, script = scriptpubkey });
-		}
-
-		static async Task CreateTransaction(this DbConnection db, string tx)
-		{
-			await db.ExecuteAsync("INSERT INTO txs VALUES ('BTC', @tx, '') ON CONFLICT DO NOTHING", new { tx });
-		}
-
-		public static async Task AddOutput(this DbConnection db, string tx, int index, string scriptpubkey, int val)
-		{
-			await CreateTransaction(db, tx);
-			await db.ExecuteAsync("INSERT INTO scripts VALUES ('BTC', @scriptpubkey, @scriptpubkey) ON CONFLICT DO NOTHING", new { scriptpubkey = scriptpubkey });
-			await db.ExecuteAsync("INSERT INTO outs VALUES ('BTC', @tx, @idx, @scriptpubkey, @v)", new { tx, idx = index, scriptpubkey = scriptpubkey, v = val });
-		}
-		public static async Task SpendOutput(this DbConnection db, string tx, string spentTx, int spentIndex)
-		{
-			await CreateTransaction(db, tx);
-			await db.ExecuteAsync("INSERT INTO ins VALUES ('BTC', @tx, 0, @spenttx, @spentidx)", new { tx, spenttx = spentTx, spentidx = spentIndex });
 		}
 	}
 }

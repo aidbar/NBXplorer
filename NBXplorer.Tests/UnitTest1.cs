@@ -395,7 +395,7 @@ namespace NBXplorer.Tests
 			}
 		}
 
-		private static async void CanCreatePSBTCore(ServerTester tester, ScriptPubKeyType type)
+		private static void CanCreatePSBTCore(ServerTester tester, ScriptPubKeyType type)
 		{
 			var userExtKey = new ExtKey();
 			var userDerivationScheme = tester.Client.Network.DerivationStrategyFactory.CreateDirectDerivationStrategy(userExtKey.Neuter(), new DerivationStrategyOptions()
@@ -3247,10 +3247,12 @@ namespace NBXplorer.Tests
 			}
 		}
 
-		[Fact]
-		public void CanGetKeyInformations()
+		[Theory]
+		[InlineData(Backend.Postgres)]
+		[InlineData(Backend.DBTrie)]
+		public void CanGetKeyInformations(Backend backend)
 		{
-			using (var tester = ServerTester.Create())
+			using (var tester = ServerTester.Create(backend))
 			{
 				var key = new BitcoinExtKey(new ExtKey(), tester.Network);
 				var pubkey = tester.CreateDerivationStrategy(key.Neuter());

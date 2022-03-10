@@ -54,9 +54,9 @@ BEGIN
 
 	-- Turn mempool flag of confirmed txs to false
 	WITH q AS (
-	SELECT t.code, t.tx_id, b.blk_id, tb.blk_idx FROM txs t
-	JOIN txs_blks tb USING (code, tx_id)
-	JOIN blks b ON b.code=tb.code AND b.blk_id=tb.blk_id
+	SELECT t.code, t.tx_id, b.blk_id, bt.blk_idx FROM txs t
+	JOIN blks_txs bt USING (code, tx_id)
+	JOIN blks b ON b.code=bt.code AND b.blk_id=bt.blk_id
 	-- Theorically, we shouldn't use t.mempool IS TRUE. But this call would slow everything down.
 	-- Here we depend on the indexer to do the right thing
 	WHERE t.code=in_code AND t.mempool IS TRUE AND b.confirmed IS TRUE)
@@ -126,8 +126,8 @@ BEGIN
 	-- Set mempool flags of the txs in the blocks back to true
 	WITH q AS (
 	SELECT t.code, t.tx_id FROM txs t
-	JOIN txs_blks tb USING (code, tx_id)
-	JOIN blks b ON b.code=tb.code AND b.blk_id=tb.blk_id
+	JOIN blks_txs bt USING (code, tx_id)
+	JOIN blks b ON b.code=bt.code AND b.blk_id=bt.blk_id
 	WHERE t.code=in_code AND b.height >= in_height AND b.confirmed IS TRUE AND t.mempool IS FALSE)
 	UPDATE txs t
 	SET mempool='t', blk_id=NULL, blk_idx=NULL
@@ -153,10 +153,10 @@ END;
 $$ LANGUAGE plpgsql;
 
 
-CREATE TABLE IF NOT EXISTS txs_blks (
+CREATE TABLE IF NOT EXISTS blks_txs (
   code TEXT NOT NULL,
-  tx_id TEXT NOT NULL,
   blk_id TEXT NOT NULL,
+  tx_id TEXT NOT NULL,
   blk_idx INT DEFAULT NULL,
   PRIMARY KEY(code, tx_id, blk_id),
   FOREIGN KEY(code, tx_id) REFERENCES txs ON DELETE CASCADE,
@@ -250,30 +250,47 @@ CREATE TABLE IF NOT EXISTS wallets (
   created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP);
 
 -- A wallet can track a specific script, add those to this table
-CREATE TABLE IF NOT EXISTS wallets_scripts (
+CREATE TABLE IF NOT EXISTS wallets_explicit_scripts (
 code TEXT NOT NULL,
-script TEXT NOT NULL,
 wallet_id TEXT NOT NULL REFERENCES wallets ON DELETE CASCADE,
+script TEXT NOT NULL,
 PRIMARY KEY (code, script, wallet_id),
 FOREIGN KEY (code, script) REFERENCES scripts ON DELETE CASCADE
 );
-CREATE TABLE IF NOT EXISTS descriptors_wallets (
+CREATE INDEX wes_by_wallet_id ON wallets_explicit_scripts (wallet_id);
+
+CREATE TABLE IF NOT EXISTS wallets_descriptors (
 code TEXT NOT NULL,
-descriptor TEXT NOT NULL,
 wallet_id TEXT NOT NULL REFERENCES wallets ON DELETE CASCADE,
+descriptor TEXT NOT NULL,
 PRIMARY KEY (code, descriptor, wallet_id),
 FOREIGN KEY (code, descriptor) REFERENCES descriptors ON DELETE CASCADE
 );
+CREATE INDEX wd_by_wallet_id ON wallets_descriptors (wallet_id);
+
+CREATE OR REPLACE VIEW wallets_scripts AS
+SELECT DISTINCT * FROM
+(
+  SELECT dw.wallet_id, s.code, s.script
+  FROM descriptors_scripts ds
+  INNER JOIN scripts s USING (code, script)
+  INNER JOIN wallets_descriptors dw USING (code, descriptor)
+  UNION ALL
+  SELECT ws.wallet_id, s.code, s.script
+  FROM wallets_explicit_scripts ws
+  INNER JOIN scripts s USING (code, script)
+) q;
+
 
 -- Returns the scripts along with the wallet_id tracking them
 CREATE OR REPLACE VIEW tracked_scripts AS
 SELECT s.code, s.script, s.addr, dw.wallet_id, 'DESCRIPTOR' source, ds.descriptor, ds.keypath, ds.idx
 FROM descriptors_scripts ds
 INNER JOIN scripts s USING (code, script)
-INNER JOIN descriptors_wallets dw USING (code, descriptor)
+INNER JOIN wallets_descriptors dw USING (code, descriptor)
 UNION ALL
 SELECT s.code, s.script, s.addr, ws.wallet_id, 'EXPLICIT' source, NULL, NULL, NULL
-FROM wallets_scripts ws
+FROM wallets_explicit_scripts ws
 INNER JOIN scripts s USING (code, script);
 
 -- Returns a log of inputs and outputs, 
@@ -314,9 +331,9 @@ WHERE o.spent_blk_id IS NULL AND (txo.blk_id IS NOT NULL OR (txo.mempool IS TRUE
 CREATE OR REPLACE VIEW wallets_utxos AS
 SELECT q.wallet_id, u.* FROM utxos u,
 -- Note that using DISTINCT here drastically improve perf... unsure why
-LATERAL (SELECT DISTINCT ts.wallet_id, ts.code, ts.script
-		 FROM tracked_scripts ts
-         WHERE ts.code = u.code AND ts.script = u.script) q;
+LATERAL (SELECT DISTINCT ws.wallet_id, ws.code, ws.script
+		 FROM wallets_scripts ws
+         WHERE ws.code = u.code AND ws.script = u.script) q;
 
 -- Returns the balances of a wallet.
 -- Warning: A wallet without any balance may not appear as a row in this view
