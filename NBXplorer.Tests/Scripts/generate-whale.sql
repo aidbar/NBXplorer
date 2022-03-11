@@ -36,3 +36,5 @@ FROM generate_series(0, 223000) s;
 
 CALL new_block_updated('BTC', 100);
 ANALYZE;
+REFRESH MATERIALIZED VIEW wallets_history;
+ANALYZE;
