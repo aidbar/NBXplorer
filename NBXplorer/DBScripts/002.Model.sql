@@ -24,27 +24,25 @@ ALTER TABLE txs DROP CONSTRAINT IF EXISTS txs_code_replaced_by_fkey CASCADE;
 ALTER TABLE txs ADD CONSTRAINT txs_code_replaced_by_fkey FOREIGN KEY (code, replaced_by) REFERENCES txs (code, tx_id) ON DELETE SET NULL;
 
 CREATE INDEX IF NOT EXISTS txs_unconf_idx ON txs (code) INCLUDE (tx_id) WHERE mempool IS TRUE;
-CREATE INDEX IF NOT EXISTS txs_seen_at_idx ON txs (seen_at);
 
 CREATE OR REPLACE FUNCTION txs_denormalize() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE
+  q RECORD;
 BEGIN
-    WITH q AS (
-	SELECT t.code, t.tx_id, t.blk_id, t.blk_idx, t.mempool, t.replaced_by, t.seen_at
+  -- Propagate any change to table outs, ins, and ins_outs
+  FOR q IN SELECT t.code, t.tx_id, t.blk_id, t.blk_idx, t.mempool, t.replaced_by, t.seen_at
 	FROM new_txs
 	JOIN txs t USING (code, tx_id)
-  )
-  UPDATE outs o SET  blk_id = q.blk_id, blk_idx = q.blk_idx, mempool = q.mempool, replaced_by = q.replaced_by, seen_at = q.seen_at
-  FROM q
-  WHERE o.code=q.code AND o.tx_id=q.tx_id;
-  
-  WITH q AS (
-	SELECT t.code, t.tx_id, t.blk_id, t.blk_idx, t.mempool, t.replaced_by, t.seen_at
-	FROM new_txs
-	JOIN txs t USING (code, tx_id)
-  )
-  UPDATE ins i SET  blk_id = q.blk_id, blk_idx = q.blk_idx, mempool = q.mempool, replaced_by = q.replaced_by, seen_at = q.seen_at
-  FROM q
-  WHERE i.code=q.code AND i.input_tx_id=q.tx_id;
+  LOOP
+	UPDATE outs o SET  blk_id = q.blk_id, blk_idx = q.blk_idx, mempool = q.mempool, replaced_by = q.replaced_by, seen_at = q.seen_at
+	WHERE o.code=q.code AND o.tx_id=q.tx_id;
+
+	UPDATE ins i SET  blk_id = q.blk_id, blk_idx = q.blk_idx, mempool = q.mempool, replaced_by = q.replaced_by, seen_at = q.seen_at
+	WHERE i.code=q.code AND i.input_tx_id=q.tx_id;
+
+	UPDATE ins_outs io SET  blk_id = q.blk_id, blk_idx = q.blk_idx, mempool = q.mempool, replaced_by = q.replaced_by, seen_at = q.seen_at
+	WHERE io.code=q.code AND io.tx_id=q.tx_id;
+  END LOOP;
   RETURN NULL;
 END
 $$;
@@ -227,11 +225,13 @@ CREATE TABLE IF NOT EXISTS outs (
 
 CREATE INDEX IF NOT EXISTS outs_code_immature_idx ON outs (code) INCLUDE (tx_id, idx) WHERE immature IS TRUE;
 CREATE INDEX IF NOT EXISTS outs_unspent_idx ON outs (code) WHERE spent_blk_id IS NULL;
-CREATE INDEX IF NOT EXISTS outs_seen_at_idx ON outs (seen_at);
 
 CREATE OR REPLACE FUNCTION outs_denormalize() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE
+  r RECORD;
 BEGIN
-    WITH q AS (
+  -- Take the denormalized values from the associated tx, put them in outs
+  WITH q AS (
 	SELECT t.code, t.tx_id, t.blk_id, t.blk_idx, t.mempool, t.replaced_by, t.seen_at
 	FROM new_outs
 	JOIN txs t USING (code, tx_id)
@@ -239,7 +239,36 @@ BEGIN
   UPDATE outs o SET  blk_id = q.blk_id, blk_idx = q.blk_idx, mempool = q.mempool, replaced_by = q.replaced_by, seen_at = q.seen_at
   FROM q
   WHERE o.code=q.code AND o.tx_id=q.tx_id;
-  RETURN NULL;
+
+    -- and put them in ins_outs
+  INSERT INTO ins_outs
+  SELECT
+	o.code,
+	o.tx_id,
+	o.idx,
+	't',
+	NULL,
+	NULL,
+	o.script,
+	o.value,
+	o.asset_id,
+	o.immature,
+	t.blk_id,
+	t.blk_idx,
+	t.mempool,
+	t.replaced_by,
+	t.seen_at
+	FROM new_outs o
+	JOIN txs t ON t.code=o.code AND t.tx_id=o.tx_id;
+
+	-- Mark scripts as used
+	FOR r IN SELECT * FROM new_outs
+	LOOP
+	  UPDATE scripts
+		SET used='t'
+		WHERE code=r.code AND script=r.script;
+	END LOOP;
+	RETURN NULL;
 END
 $$;
 
@@ -247,21 +276,6 @@ CREATE TRIGGER outs_insert_trigger
   AFTER INSERT ON outs
   REFERENCING NEW TABLE AS new_outs
   FOR EACH STATEMENT EXECUTE PROCEDURE outs_denormalize();
-
-
-CREATE OR REPLACE FUNCTION set_scripts_used()
-  RETURNS TRIGGER 
-  LANGUAGE PLPGSQL
-AS $$
-BEGIN
-	UPDATE scripts
-	  SET used='t'
-	  WHERE code=NEW.code AND script=NEW.script;
-	RETURN NEW;
-END;
-$$;
-DROP TRIGGER IF EXISTS outs_set_scripts_used on outs;
-CREATE TRIGGER outs_set_scripts_used AFTER INSERT ON outs FOR EACH ROW EXECUTE PROCEDURE set_scripts_used();
   
 ALTER TABLE outs DROP CONSTRAINT IF EXISTS outs_pkey CASCADE;
 CREATE UNIQUE INDEX IF NOT EXISTS outs_pkey ON outs (code, tx_id, idx) INCLUDE (script, value, asset_id);
@@ -270,9 +284,13 @@ ALTER TABLE outs ADD CONSTRAINT outs_pkey PRIMARY KEY USING INDEX outs_pkey;
 CREATE TABLE IF NOT EXISTS ins (
   code TEXT NOT NULL,
   input_tx_id TEXT NOT NULL,
-  input_idx TEXT NOT NULL,
+  input_idx BIGINT NOT NULL,
   spent_tx_id TEXT NOT NULL,
   spent_idx BIGINT NOT NULL,
+  -- Denormalized data from the spent outs
+  script TEXT NOT NULL,
+  value BIGINT NOT NULL,
+  asset_id TEXT NOT NULL,
   -- Denormalized data which rarely change: Must be same as tx
   blk_id TEXT DEFAULT NULL,
   blk_idx INT DEFAULT NULL,
@@ -280,15 +298,16 @@ CREATE TABLE IF NOT EXISTS ins (
   replaced_by TEXT DEFAULT NULL,
   seen_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (code, input_tx_id, input_idx),
-  FOREIGN KEY (code, spent_tx_id, spent_idx) REFERENCES outs (code, tx_id, idx) ON DELETE CASCADE,
-  FOREIGN KEY (code, input_tx_id) REFERENCES txs (code, tx_id) ON DELETE CASCADE,
-  FOREIGN KEY (code, spent_tx_id) REFERENCES txs (code, tx_id) ON DELETE CASCADE);
+  FOREIGN KEY (code, spent_tx_id, spent_idx) REFERENCES outs (code, tx_id, idx),
+  FOREIGN KEY (code, input_tx_id) REFERENCES txs (code, tx_id),
+  FOREIGN KEY (code, spent_tx_id) REFERENCES txs (code, tx_id),
+  FOREIGN KEY (code, script) REFERENCES scripts);
 CREATE INDEX IF NOT EXISTS ins_code_spentoutpoint_txid_idx ON ins (code, spent_tx_id, spent_idx) INCLUDE (input_tx_id, input_idx);
-CREATE INDEX IF NOT EXISTS ins_seen_at_idx ON ins (seen_at);
 
 
 CREATE OR REPLACE FUNCTION ins_denormalize() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
+  -- Take the denormalized values from the associated tx, put them in ins
   WITH q AS (
 	SELECT t.code, t.tx_id, t.blk_id, t.blk_idx, t.mempool, t.replaced_by, t.seen_at
 	FROM new_ins i
@@ -297,6 +316,28 @@ BEGIN
   UPDATE ins i SET  blk_id = q.blk_id, blk_idx = q.blk_idx, mempool = q.mempool, replaced_by = q.replaced_by, seen_at = q.seen_at
   FROM q
   WHERE i.code=q.code AND i.input_tx_id=q.tx_id;
+
+  -- and put them in ins_outs
+  INSERT INTO ins_outs
+  SELECT
+	i.code,
+	i.input_tx_id,
+	i.input_idx,
+	'f',
+	i.spent_tx_id,
+	i.spent_idx,
+	i.script,
+	i.value,
+	i.asset_id,
+	NULL,
+	t.blk_id,
+	t.blk_idx,
+	t.mempool,
+	t.replaced_by,
+	t.seen_at
+	FROM new_ins i
+	JOIN txs t ON t.code=i.code AND t.tx_id=i.input_tx_id;
+
   RETURN NULL;
 END
 $$;
@@ -381,13 +422,27 @@ INNER JOIN scripts s USING (code, script);
 -- SELECT * FROM ins_outs
 -- WHERE blk_id IS NOT NULL OR (mempool IS TRUE AND replaced_by IS NULL)
 -- ORDER BY seen_at
-CREATE OR REPLACE VIEW ins_outs AS
-SELECT o.code, o.tx_id, 'OUTPUT' source, o.tx_id out_tx_id, o.idx, o.script, o.value, o.asset_id, o.immature, o.blk_id, o.blk_idx, o.mempool, o.replaced_by, o.seen_at
-FROM outs o
-UNION ALL
-SELECT i.code, i.input_tx_id tx_id, 'INPUT', i.spent_tx_id out_tx_id, i.spent_idx, o.script, o.value, o.asset_id, 'f', i.blk_id, i.blk_idx, i.mempool, i.replaced_by, i.seen_at
-FROM ins i
-LEFT JOIN outs o ON i.code=o.code AND i.spent_tx_id=o.tx_id AND i.spent_idx=o.idx;
+CREATE TABLE IF NOT EXISTS ins_outs (
+  code TEXT NOT NULL,
+  tx_id TEXT NOT NULL,
+  idx BIGINT NOT NULL,
+  is_out BOOLEAN NOT NULL,
+  spent_tx_id TEXT,
+  spent_idx BIGINT,
+  script TEXT NOT NULL,
+  value BIGINT NOT NULL,
+  asset_id TEXT NOT NULL,
+  immature BOOLEAN,
+  -- Denormalized data which rarely change: Must be same as tx
+  blk_id TEXT DEFAULT NULL,
+  blk_idx INT DEFAULT NULL,
+  mempool BOOLEAN DEFAULT 't',
+  replaced_by TEXT DEFAULT NULL,
+  seen_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (code, tx_id, idx, is_out),
+  FOREIGN KEY (code, spent_tx_id, spent_idx) REFERENCES outs (code, tx_id, idx)
+);
+CREATE INDEX IF NOT EXISTS ins_outs_seen_at_idx ON ins_outs (seen_at);
 
 -- Returns current UTXOs
 -- Warning: It also returns the UTXO that are confirmed but spent in the mempool, as well as immature utxos.
@@ -453,6 +508,8 @@ AS $$
 DECLARE
 	r RECORD;
 BEGIN
+	-- This look detect double spend by inserting into the spent_outs
+	-- table and detecting conflicts
 	FOR r IN 
 		INSERT INTO spent_outs AS so
 		SELECT code, spent_tx_id, spent_idx, input_tx_id FROM unnest(in_ins)
@@ -489,9 +546,10 @@ BEGIN
 	END LOOP;
 	
 	INSERT INTO ins 
-		SELECT i.* FROM
+		SELECT i.*, o.script, o.value, o.asset_id FROM
 		(SELECT * FROM unnest(in_ins)) i (code, input_tx_id, input_idx, spent_tx_id, spent_idx)
-		JOIN outs o ON i.code=o.code AND i.spent_tx_id=o.tx_id AND i.spent_idx=o.idx ON CONFLICT DO NOTHING;
+		JOIN outs o ON i.code=o.code AND i.spent_tx_id=o.tx_id AND i.spent_idx=o.idx
+	ON CONFLICT DO NOTHING;
 END;
 $$ LANGUAGE plpgsql;
 
@@ -502,8 +560,8 @@ CREATE MATERIALIZED VIEW IF NOT EXISTS wallets_history AS
 		   io.asset_id,
 		   tx_id,
 		   io.seen_at,
-		   COALESCE(SUM (value) FILTER (WHERE source='OUTPUT'), 0) -  COALESCE(SUM (value) FILTER (WHERE source='INPUT'), 0) balance_change,
-		   SUM(COALESCE(SUM (value) FILTER (WHERE source='OUTPUT'), 0) -  COALESCE(SUM (value) FILTER (WHERE source='INPUT'), 0)) OVER (PARTITION BY wallet_id, io.code, asset_id ORDER BY io.seen_at) balance_total
+		   COALESCE(SUM (value) FILTER (WHERE is_out IS TRUE), 0) -  COALESCE(SUM (value) FILTER (WHERE is_out IS FALSE), 0) balance_change,
+		   SUM(COALESCE(SUM (value) FILTER (WHERE is_out IS TRUE), 0) -  COALESCE(SUM (value) FILTER (WHERE is_out IS FALSE), 0)) OVER (PARTITION BY wallet_id, io.code, asset_id ORDER BY io.seen_at) balance_total
 	FROM ins_outs io,
 	LATERAL (SELECT DISTINCT ts.wallet_id, ts.code, ts.script
 			 FROM wallets_scripts ts
@@ -527,3 +585,27 @@ RETURNS TABLE(date TIMESTAMPTZ, wallet_id TEXT, code TEXT, asset_id TEXT, balanc
 	  GROUP BY wallet_id, code, asset_id
   ) q
 $$  LANGUAGE SQL STABLE;
+
+CREATE OR REPLACE FUNCTION get_wallets_recent(in_wallet_id TEXT, in_limit INT, in_offset INT)
+RETURNS TABLE(wallet_id TEXT, code TEXT, asset_id TEXT, tx_id TEXT, seen_at TIMESTAMPTZ, balance_change BIGINT, balance_total BIGINT) AS $$
+	SELECT q.wallet_id, q.code, q.asset_id, q.tx_id, q.seen_at, q.balance_change, COALESCE((q.latest_balance - LAG(balance_change_sum, 1) OVER (ORDER BY seen_at DESC)), q.latest_balance) balance_total FROM
+		(SELECT q.*, 
+				COALESCE((SELECT unconfirmed_balance FROM wallets_balances WHERE wallet_id=q.wallet_id AND code=q.code AND asset_id=q.asset_id), 0) latest_balance,
+				SUM(q.balance_change) OVER (ORDER BY seen_at DESC) balance_change_sum FROM 
+			(SELECT q.wallet_id,
+				   io.code,
+				   io.asset_id,
+				   tx_id,
+				   io.seen_at,
+				   COALESCE(SUM (value) FILTER (WHERE is_out IS TRUE), 0) -  COALESCE(SUM (value) FILTER (WHERE is_out IS FALSE), 0) balance_change
+			FROM ins_outs io,
+			LATERAL (SELECT DISTINCT ts.wallet_id, ts.code, ts.script
+					 FROM wallets_scripts ts
+					 WHERE ts.code = io.code AND ts.script = io.script) q
+			WHERE (blk_id IS NOT NULL OR (mempool IS TRUE AND replaced_by IS NULL))
+			GROUP BY wallet_id, io.code, io.asset_id, tx_id, seen_at HAVING (wallet_id=in_wallet_id)
+			ORDER BY seen_at DESC, tx_id, asset_id
+			LIMIT in_limit) q
+		) q
+	OFFSET in_offset
+$$ LANGUAGE SQL STABLE;

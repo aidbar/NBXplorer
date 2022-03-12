@@ -22,7 +22,7 @@ FROM generate_series(0, 223000) s
 WHERE MOD(s, 2) = 0;
 
 INSERT INTO ins
-SELECT 'BTC', encode(sha256(('t-' || s)::bytea), 'hex') input_tx_id, 0 input_idx, encode(sha256(('t-' || (s-1))::bytea), 'hex') spent_tx_id, 0 spent_idx
+SELECT 'BTC', encode(sha256(('t-' || s)::bytea), 'hex') input_tx_id, 0 input_idx, encode(sha256(('t-' || (s-1))::bytea), 'hex') spent_tx_id, 0 spent_idx, encode(sha256(('s-' || s-1)::bytea), 'hex'), 40, ''
 FROM generate_series(0, 223000) s
 WHERE MOD(s, 2) = 1;
 
