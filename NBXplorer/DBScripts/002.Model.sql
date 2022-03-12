@@ -226,21 +226,10 @@ CREATE TABLE IF NOT EXISTS outs (
 CREATE INDEX IF NOT EXISTS outs_code_immature_idx ON outs (code) INCLUDE (tx_id, idx) WHERE immature IS TRUE;
 CREATE INDEX IF NOT EXISTS outs_unspent_idx ON outs (code) WHERE spent_blk_id IS NULL;
 
-CREATE OR REPLACE FUNCTION outs_denormalize() RETURNS trigger LANGUAGE plpgsql AS $$
+CREATE OR REPLACE FUNCTION outs_denormalize_to_ins_outs() RETURNS trigger LANGUAGE plpgsql AS $$
 DECLARE
   r RECORD;
 BEGIN
-  -- Take the denormalized values from the associated tx, put them in outs
-  WITH q AS (
-	SELECT t.code, t.tx_id, t.blk_id, t.blk_idx, t.mempool, t.replaced_by, t.seen_at
-	FROM new_outs
-	JOIN txs t USING (code, tx_id)
-  )
-  UPDATE outs o SET  blk_id = q.blk_id, blk_idx = q.blk_idx, mempool = q.mempool, replaced_by = q.replaced_by, seen_at = q.seen_at
-  FROM q
-  WHERE o.code=q.code AND o.tx_id=q.tx_id;
-
-    -- and put them in ins_outs
   INSERT INTO ins_outs
   SELECT
 	o.code,
@@ -272,10 +261,28 @@ BEGIN
 END
 $$;
 
+CREATE OR REPLACE FUNCTION outs_denormalize_from_tx() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE
+  r RECORD;
+BEGIN
+  SELECT * INTO r FROM txs WHERE code=NEW.code AND tx_id=NEW.tx_id;
+  NEW.blk_id = r.blk_id;
+  NEW.blk_idx = r.blk_idx;
+  NEW.mempool = r.mempool;
+  NEW.replaced_by = r.replaced_by;
+  NEW.seen_at = r.seen_at;
+  RETURN NEW;
+END
+$$;
+
+CREATE TRIGGER outs_before_insert_trigger
+  BEFORE INSERT ON outs
+  FOR EACH ROW EXECUTE PROCEDURE outs_denormalize_from_tx();
+
 CREATE TRIGGER outs_insert_trigger
   AFTER INSERT ON outs
   REFERENCING NEW TABLE AS new_outs
-  FOR EACH STATEMENT EXECUTE PROCEDURE outs_denormalize();
+  FOR EACH STATEMENT EXECUTE PROCEDURE outs_denormalize_to_ins_outs();
 
 CREATE OR REPLACE FUNCTION outs_delete_ins_outs() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
@@ -317,19 +324,11 @@ CREATE TABLE IF NOT EXISTS ins (
 CREATE INDEX IF NOT EXISTS ins_code_spentoutpoint_txid_idx ON ins (code, spent_tx_id, spent_idx) INCLUDE (input_tx_id, input_idx);
 
 
-CREATE OR REPLACE FUNCTION ins_denormalize() RETURNS trigger LANGUAGE plpgsql AS $$
+CREATE OR REPLACE FUNCTION ins_denormalize_to_ins_outs() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE
+  r RECORD;
 BEGIN
-  -- Take the denormalized values from the associated tx, put them in ins
-  WITH q AS (
-	SELECT t.code, t.tx_id, t.blk_id, t.blk_idx, t.mempool, t.replaced_by, t.seen_at
-	FROM new_ins i
-	JOIN txs t ON t.code=i.code AND t.tx_id=i.input_tx_id
-  )
-  UPDATE ins i SET  blk_id = q.blk_id, blk_idx = q.blk_idx, mempool = q.mempool, replaced_by = q.replaced_by, seen_at = q.seen_at
-  FROM q
-  WHERE i.code=q.code AND i.input_tx_id=q.tx_id;
-
-  -- and put them in ins_outs
+  -- Duplicate the ins into the ins_outs table
   INSERT INTO ins_outs
   SELECT
 	i.code,
@@ -349,15 +348,77 @@ BEGIN
 	t.seen_at
 	FROM new_ins i
 	JOIN txs t ON t.code=i.code AND t.tx_id=i.input_tx_id;
-
   RETURN NULL;
 END
 $$;
 
+CREATE OR REPLACE FUNCTION ins_denormalize_from_txs() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE
+  r RECORD;
+BEGIN
+
+  -- This look detect double spend by inserting into the spent_outs
+  -- table and detecting conflicts
+  FOR r IN 
+	  INSERT INTO spent_outs AS so VALUES (NEW.code, NEW.spent_tx_id, NEW.spent_idx, NEW.input_tx_id)
+	  ON CONFLICT (code, tx_id, idx) DO UPDATE SET spent_by=EXCLUDED.spent_by, prev_spent_by=so.spent_by
+	  RETURNING *
+  LOOP
+	  IF r.prev_spent_by IS NOT NULL AND r.prev_spent_by != r.spent_by THEN
+		  -- Make the other tx replaced
+		  UPDATE txs t SET replaced_by=r.spent_by
+		  WHERE t.code=r.code AND t.tx_id=r.prev_spent_by AND t.mempool IS TRUE;
+
+		  -- Make sure this tx isn't replaced
+		  UPDATE txs t SET replaced_by=NULL
+		  WHERE t.code=r.code AND t.tx_id=r.spent_by AND t.mempool IS TRUE;
+
+		  -- Propagate to the children
+		  WITH RECURSIVE cte(code, tx_id) AS
+		  (
+			SELECT  t.code, t.tx_id FROM txs t
+			WHERE
+				t.code=r.code AND
+				t.tx_id=r.prev_spent_by
+			UNION
+			SELECT t.code, t.tx_id FROM cte c
+			JOIN outs o USING (code, tx_id)
+			JOIN ins i ON i.code=c.code AND i.spent_tx_id=o.tx_id AND i.spent_idx=o.idx
+			JOIN txs t ON t.code=c.code AND t.tx_id=i.input_tx_id
+			WHERE t.code=c.code AND t.mempool IS TRUE
+		  )
+		  UPDATE txs t SET replaced_by=r.spent_by
+		  FROM cte
+		  WHERE cte.code=t.code AND cte.tx_id=t.tx_id;
+	  END IF;
+  END LOOP;
+
+   -- Take the denormalized values from the associated tx, and spent outs, put them in the inserted
+  SELECT * INTO r FROM txs WHERE code=NEW.code AND tx_id=NEW.input_tx_id;
+  NEW.blk_id = r.blk_id;
+  NEW.blk_id = r.blk_id;
+  NEW.mempool = r.mempool;
+  NEW.replaced_by = r.replaced_by;
+  NEW.seen_at = r.seen_at;
+  SELECT * INTO r FROM outs WHERE code=NEW.code AND tx_id=NEW.spent_tx_id AND idx=NEW.spent_idx;
+  IF NOT FOUND THEN
+	RETURN NULL;
+  END IF;
+  NEW.script = r.script;
+  NEW.value = r.value;
+  NEW.asset_id = r.asset_id;
+  RETURN NEW;
+END
+$$;
+
+CREATE TRIGGER ins_before_insert_trigger
+  BEFORE INSERT ON ins
+  FOR EACH ROW EXECUTE PROCEDURE ins_denormalize_from_txs();
+
 CREATE TRIGGER ins_insert_trigger
   AFTER INSERT ON ins
   REFERENCING NEW TABLE AS new_ins
-  FOR EACH STATEMENT EXECUTE PROCEDURE ins_denormalize();
+  FOR EACH STATEMENT EXECUTE PROCEDURE ins_denormalize_to_ins_outs();
 
 CREATE OR REPLACE FUNCTION ins_delete_ins_outs() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
@@ -496,65 +557,6 @@ CREATE TABLE IF NOT EXISTS spent_outs (
   FOREIGN KEY (code, spent_by) REFERENCES txs ON DELETE CASCADE,
   FOREIGN KEY (code, prev_spent_by) REFERENCES txs ON DELETE CASCADE
 );
-
-
-CREATE TYPE new_ins AS (
-  code TEXT,
-  tx_id TEXT,
-  idx BIGINT,
-  spent_tx_id TEXT,
-  spent_idx BIGINT);
-
-CREATE OR REPLACE PROCEDURE add_ins(in_ins new_ins[])
-AS $$
-DECLARE
-	r RECORD;
-BEGIN
-	-- This look detect double spend by inserting into the spent_outs
-	-- table and detecting conflicts
-	FOR r IN 
-		INSERT INTO spent_outs AS so
-		SELECT code, spent_tx_id, spent_idx, tx_id FROM unnest(in_ins)
-		ON CONFLICT (code, tx_id, idx) DO UPDATE SET spent_by=EXCLUDED.spent_by, prev_spent_by=so.spent_by
-		RETURNING *
-	LOOP
-		IF r.prev_spent_by IS NOT NULL AND r.prev_spent_by != r.spent_by THEN
-			-- Make the other tx replaced
-			UPDATE txs t SET replaced_by=r.spent_by
-			WHERE t.code=r.code AND t.tx_id=r.prev_spent_by AND t.mempool IS TRUE;
-
-			-- Make sure this tx isn't replaced
-			UPDATE txs t SET replaced_by=NULL
-			WHERE t.code=r.code AND t.tx_id=r.spent_by AND t.mempool IS TRUE;
-
-			-- Propagate to the children
-			WITH RECURSIVE cte(code, tx_id) AS
-			(
-			  SELECT  t.code, t.tx_id FROM txs t
-			  WHERE
-				  t.code=r.code AND
-				  t.tx_id=r.prev_spent_by
-			  UNION
-			  SELECT t.code, t.tx_id FROM cte c
-			  JOIN outs o USING (code, tx_id)
-			  JOIN ins i ON i.code=c.code AND i.spent_tx_id=o.tx_id AND i.spent_idx=o.idx
-			  JOIN txs t ON t.code=c.code AND t.tx_id=i.input_tx_id
-			  WHERE t.code=c.code AND t.mempool IS TRUE
-			)
-			UPDATE txs t SET replaced_by=r.spent_by
-			FROM cte
-			WHERE cte.code=t.code AND cte.tx_id=t.tx_id;
-		END IF;
-	END LOOP;
-	
-	INSERT INTO ins 
-		SELECT i.*, o.script, o.value, o.asset_id FROM
-		(SELECT * FROM unnest(in_ins)) i (code, input_tx_id, input_idx, spent_tx_id, spent_idx)
-		JOIN outs o ON i.code=o.code AND i.spent_tx_id=o.tx_id AND i.spent_idx=o.idx
-		ON CONFLICT DO NOTHING;
-END;
-$$ LANGUAGE plpgsql;
-
 
 CREATE MATERIALIZED VIEW IF NOT EXISTS wallets_history AS
 	SELECT q.wallet_id,

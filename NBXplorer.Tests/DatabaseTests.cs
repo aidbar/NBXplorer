@@ -88,9 +88,9 @@ namespace NBXplorer.Tests
 			await conn.ExecuteAsync(
 				"INSERT INTO txs (code, tx_id, mempool) VALUES ('BTC', 't0', 't'), ('BTC', 't1', 't'),  ('BTC', 't2', 't'), ('BTC', 't3', 't'), ('BTC', 't4', 't'), ('BTC', 't5', 't');" +
 				"INSERT INTO scripts VALUES ('BTC', 'a1', '');" + 
-				"INSERT INTO outs VALUES('BTC', 't0', 10, 'a1', 5);" + 
-				"CALL add_ins(ARRAY[ROW('BTC', 't1', 0, 't0', 10)::new_ins]);" +
-				"CALL add_ins(ARRAY[ROW('BTC', 't2', 0, 't0', 10)::new_ins]);"
+				"INSERT INTO outs VALUES ('BTC', 't0', 10, 'a1', 5);" + 
+				"INSERT INTO ins VALUES ('BTC', 't1', 0, 't0', 10);" +
+				"INSERT INTO ins VALUES ('BTC', 't2', 0, 't0', 10);"
 				);
 
 			var t1 = await conn.QueryFirstAsync("SELECT * FROM txs WHERE tx_id='t1'");
@@ -101,7 +101,7 @@ namespace NBXplorer.Tests
 			Assert.True(t2.mempool);
 			Assert.Null(t2.replaced_by);
 
-			await conn.ExecuteAsync("CALL add_ins(ARRAY[ROW('BTC', 't3', 0, 't0', 10)::new_ins]);");
+			await conn.ExecuteAsync("INSERT INTO ins VALUES ('BTC', 't3', 0, 't0', 10);");
 			t2 = await conn.QueryFirstAsync("SELECT * FROM txs WHERE tx_id='t2'");
 			Assert.True(t2.mempool);
 			Assert.Equal("t3", t2.replaced_by);
@@ -109,8 +109,8 @@ namespace NBXplorer.Tests
 			// Does it propagate to other children? t3 get spent by t4 then t3 get double spent by t5.
 			// We expect t3 and t4 to be double spent
 			await conn.ExecuteAsync("INSERT INTO outs VALUES('BTC', 't3', 10, 'a1', 5);" +
-				"CALL add_ins(ARRAY[ROW('BTC', 't4', 0, 't3', 10)::new_ins]);" +
-				"CALL add_ins(ARRAY[ROW('BTC', 't5', 0, 't0', 10)::new_ins]);");
+				"INSERT INTO ins VALUES ('BTC', 't4', 0, 't3', 10);" +
+				"INSERT INTO ins VALUES ('BTC', 't5', 0, 't0', 10);");
 
 			var t3 = await conn.QueryFirstAsync("SELECT * FROM txs WHERE tx_id='t3'");
 			Assert.True(t3.mempool);
@@ -168,7 +168,7 @@ namespace NBXplorer.Tests
 
 			await conn.ExecuteAsync(
 				"INSERT INTO txs (code, tx_id, mempool) VALUES ('BTC', 't2', 't');" +
-				"CALL add_ins(ARRAY[ROW('BTC', 't2', 0, 't1', 10)::new_ins]);");
+				"INSERT INTO ins VALUES ('BTC', 't2', 0, 't1', 10);");
 
 			balance = conn.QuerySingle("SELECT * FROM wallets_balances WHERE wallet_id='Alice';");
 			Assert.Equal(5, balance.confirmed_balance);
@@ -209,9 +209,9 @@ namespace NBXplorer.Tests
 				"INSERT INTO txs (code, tx_id, mempool) VALUES ('BTC', 't1', 't'), ('BTC', 't2', 't'), ('BTC', 't3', 't'), ('BTC', 't4', 't');" +
 				"INSERT INTO scripts VALUES ('BTC', 'script', '');" +
 				"INSERT INTO outs (code, tx_id, idx, script, value) VALUES ('BTC', 't1', 0, 'script', 5), ('BTC', 't2', 0, 'script', 5);" +
-				"CALL add_ins(ARRAY[ROW('BTC', 't2', 0, 't1', 0)::new_ins]);" +
-				"CALL add_ins(ARRAY[ROW('BTC', 't3', 0, 't2', 0)::new_ins]);" +
-				"CALL add_ins(ARRAY[ROW('BTC', 't4', 0, 't1', 0)::new_ins]);" +
+				"INSERT INTO ins VALUES ('BTC', 't2', 0, 't1', 0);" +
+				"INSERT INTO ins VALUES ('BTC', 't3', 0, 't2', 0);" +
+				"INSERT INTO ins VALUES ('BTC', 't4', 0, 't1', 0);" +
 				"INSERT INTO blks (code, blk_id, height, prev_id) VALUES ('BTC', 'b1', 1, 'b0');" +
 				"INSERT INTO blks_txs (code, blk_id, tx_id) VALUES ('BTC', 'b1', 't4'), ('BTC', 'b1', 't1');" +
 				"CALL new_block_updated('BTC', 0);");
@@ -269,7 +269,7 @@ namespace NBXplorer.Tests
 			// alice spend her coin, get change back, 2 outputs to bob
 			await conn.ExecuteAsync(
 				"INSERT INTO txs (code, tx_id) VALUES ('BTC', 't2'); " +
-				"CALL add_ins(ARRAY[ROW('BTC', 't2', 0, 't1', 1)::new_ins]);" +
+				"INSERT INTO ins VALUES ('BTC', 't2', 0, 't1', 1);" +
 				"INSERT INTO outs (code, tx_id, idx, script, value) VALUES " +
 				"('BTC', 't2', 0, 'bob2', 20), " +
 				"('BTC', 't2', 1, 'bob3', 39)," +
@@ -297,7 +297,7 @@ namespace NBXplorer.Tests
 			// Let's test: If the outputs are double spent, then it should disappear from the wallet balance.
 			await conn.ExecuteAsync(
 				"INSERT INTO txs (code, tx_id) VALUES ('BTC', 'ds'); " +
-				"CALL add_ins(ARRAY[ROW('BTC', 'ds', 0, 't1', 1)::new_ins]); " + // This one double spend t2
+				"INSERT INTO ins VALUES ('BTC', 'ds', 0, 't1', 1); " + // This one double spend t2
 				"INSERT INTO blks VALUES ('BTC', 'bs', 1, 'b0');" +
 				"INSERT INTO blks_txs (code, blk_id, tx_id) VALUES ('BTC', 'bs', 'ds');" +
 				"CALL new_block_updated('BTC', 0);");

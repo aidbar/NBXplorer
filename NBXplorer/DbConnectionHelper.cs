@@ -55,18 +55,18 @@ namespace NBXplorer
 			var dbCommand = Connection.CreateCommand();
 			int idx = 0;
 			StringBuilder builder = new StringBuilder();
-			builder.Append("CALL add_ins(ARRAY[");
+			builder.Append("INSERT INTO ins VALUES ");
 			foreach (var i in ins)
 			{
 				if (idx != 0)
 					builder.Append(',');
 				// No injection possible, those are strongly typed
-				builder.Append($"ROW('{Network.CryptoCode}', '{i.inputTxId}', {i.inputIdx}, '{i.spentOutpoint.Hash}', {i.spentOutpoint.N})::new_ins");
+				builder.Append($"('{Network.CryptoCode}', '{i.inputTxId}', {i.inputIdx}, '{i.spentOutpoint.Hash}', {i.spentOutpoint.N})");
 				idx++;
 			}
 			if (idx == 0)
 				return;
-			builder.Append("]);");
+			builder.Append(" ON CONFLICT DO NOTHING;");
 			dbCommand.CommandText = builder.ToString();
 			await dbCommand.ExecuteNonQueryAsync();
 		}

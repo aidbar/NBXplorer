@@ -6,6 +6,7 @@ using NBXplorer.DerivationStrategy;
 using NBXplorer.ModelBinders;
 using NBXplorer.Models;
 using System;
+using System.Linq;
 using System.Threading.Tasks;
 
 namespace NBXplorer.Controllers
@@ -86,7 +87,7 @@ namespace NBXplorer.Controllers
 			var height = await conn.ExecuteScalarAsync<long>("SELECT height FROM get_tip(@code)", new { code = network.CryptoCode });
 			string join = derivationScheme is null ? string.Empty : " JOIN descriptors_scripts USING (code, script)";
 			string column = derivationScheme is null ? "NULL as keypath" : " keypath";
-			var utxos = await conn.QueryAsync<(
+			var utxos = (await conn.QueryAsync<(
 				long? height,
 				string tx_id,
 				int idx,
@@ -95,14 +96,14 @@ namespace NBXplorer.Controllers
 				string keypath,
 				bool mempool,
 				bool spent_mempool,
-				DateTime tx_seen_at)>($"SELECT height, tx_id, wu.idx, value, script, {column}, mempool, spent_mempool, seen_at FROM wallets_utxos wu {join} WHERE code=@code AND wallet_id=@walletId AND immature IS FALSE", new { code = network.CryptoCode, walletId = trackedSource.GetLegacyWalletId(network) });
+				DateTime tx_seen_at)>($"SELECT height, tx_id, wu.idx, value, script, {column}, mempool, spent_mempool, seen_at FROM wallets_utxos wu {join} WHERE code=@code AND wallet_id=@walletId AND immature IS FALSE", new { code = network.CryptoCode, walletId = trackedSource.GetLegacyWalletId(network) }));
 			UTXOChanges changes = new UTXOChanges()
 			{
 				CurrentHeight = (int)height,
 				TrackedSource = trackedSource,
 				DerivationStrategy = derivationScheme
 			};
-			foreach (var utxo in utxos)
+			foreach (var utxo in utxos.OrderBy(u => u.tx_seen_at))
 			{
 				var u = new UTXO()
 				{
