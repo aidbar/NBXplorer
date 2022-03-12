@@ -276,6 +276,18 @@ CREATE TRIGGER outs_insert_trigger
   AFTER INSERT ON outs
   REFERENCING NEW TABLE AS new_outs
   FOR EACH STATEMENT EXECUTE PROCEDURE outs_denormalize();
+
+CREATE OR REPLACE FUNCTION outs_delete_ins_outs() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  DELETE FROM ins_outs io WHERE io.code=OLD.code AND io.tx_id=OLD.tx_id AND io.idx=OLD.idx AND io.is_out IS TRUE;
+  DELETE FROM ins_outs io WHERE io.code=OLD.code AND io.spent_tx_id=OLD.tx_id AND io.spent_idx=OLD.idx AND io.is_out IS FALSE;
+  RETURN OLD;
+END
+$$;
+
+CREATE TRIGGER outs_delete_trigger
+  BEFORE DELETE ON outs
+  FOR EACH ROW EXECUTE PROCEDURE outs_delete_ins_outs();
   
 ALTER TABLE outs DROP CONSTRAINT IF EXISTS outs_pkey CASCADE;
 CREATE UNIQUE INDEX IF NOT EXISTS outs_pkey ON outs (code, tx_id, idx) INCLUDE (script, value, asset_id);
@@ -298,10 +310,10 @@ CREATE TABLE IF NOT EXISTS ins (
   replaced_by TEXT DEFAULT NULL,
   seen_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (code, input_tx_id, input_idx),
-  FOREIGN KEY (code, spent_tx_id, spent_idx) REFERENCES outs (code, tx_id, idx),
-  FOREIGN KEY (code, input_tx_id) REFERENCES txs (code, tx_id),
-  FOREIGN KEY (code, spent_tx_id) REFERENCES txs (code, tx_id),
-  FOREIGN KEY (code, script) REFERENCES scripts);
+  FOREIGN KEY (code, spent_tx_id, spent_idx) REFERENCES outs (code, tx_id, idx) ON DELETE CASCADE,
+  FOREIGN KEY (code, input_tx_id) REFERENCES txs (code, tx_id) ON DELETE CASCADE,
+  FOREIGN KEY (code, spent_tx_id) REFERENCES txs (code, tx_id) ON DELETE CASCADE,
+  FOREIGN KEY (code, script) REFERENCES scripts ON DELETE CASCADE);
 CREATE INDEX IF NOT EXISTS ins_code_spentoutpoint_txid_idx ON ins (code, spent_tx_id, spent_idx) INCLUDE (input_tx_id, input_idx);
 
 
@@ -346,6 +358,17 @@ CREATE TRIGGER ins_insert_trigger
   AFTER INSERT ON ins
   REFERENCING NEW TABLE AS new_ins
   FOR EACH STATEMENT EXECUTE PROCEDURE ins_denormalize();
+
+CREATE OR REPLACE FUNCTION ins_delete_ins_outs() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  DELETE FROM ins_outs io WHERE io.code=OLD.code AND io.tx_id=OLD.input_tx_id AND io.idx=OLD.input_idx AND io.is_out IS FALSE;
+  RETURN OLD;
+END
+$$;
+
+CREATE TRIGGER ins_delete_trigger
+  BEFORE DELETE ON ins
+  FOR EACH ROW EXECUTE PROCEDURE ins_delete_ins_outs();
 
 
 CREATE TABLE IF NOT EXISTS descriptors (
@@ -417,18 +440,23 @@ SELECT s.code, s.script, s.addr, ws.wallet_id, 'EXPLICIT' source, NULL, NULL, NU
 FROM wallets_explicit_scripts ws
 INNER JOIN scripts s USING (code, script);
 
--- Returns a log of inputs and outputs, 
+-- Returns a log of inputs and outputs
+-- This table is denormalized to improve performance on queries involving seen_at
 -- If you want a view of the current in_outs wihtout conflict use
 -- SELECT * FROM ins_outs
 -- WHERE blk_id IS NOT NULL OR (mempool IS TRUE AND replaced_by IS NULL)
 -- ORDER BY seen_at
 CREATE TABLE IF NOT EXISTS ins_outs (
   code TEXT NOT NULL,
+  -- The tx_id of the input or output
   tx_id TEXT NOT NULL,
+  -- The idx of the input or the output
   idx BIGINT NOT NULL,
   is_out BOOLEAN NOT NULL,
+  -- Only available for inputs (is_out IS FALSE)
   spent_tx_id TEXT,
   spent_idx BIGINT,
+  ----
   script TEXT NOT NULL,
   value BIGINT NOT NULL,
   asset_id TEXT NOT NULL,
@@ -440,7 +468,7 @@ CREATE TABLE IF NOT EXISTS ins_outs (
   replaced_by TEXT DEFAULT NULL,
   seen_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (code, tx_id, idx, is_out),
-  FOREIGN KEY (code, spent_tx_id, spent_idx) REFERENCES outs (code, tx_id, idx)
+  FOREIGN KEY (code, spent_tx_id, spent_idx) REFERENCES outs (code, tx_id, idx) -- outs_delete_ins_outs trigger will take care of deleting, no CASCADE
 );
 CREATE INDEX IF NOT EXISTS ins_outs_seen_at_idx ON ins_outs (seen_at);
 
@@ -503,7 +531,14 @@ CREATE TABLE IF NOT EXISTS spent_outs (
 );
 
 
-CREATE OR REPLACE PROCEDURE add_ins(in_ins ins[])
+CREATE TYPE new_ins AS (
+  code TEXT,
+  tx_id TEXT,
+  idx BIGINT,
+  spent_tx_id TEXT,
+  spent_idx BIGINT);
+
+CREATE OR REPLACE PROCEDURE add_ins(in_ins new_ins[])
 AS $$
 DECLARE
 	r RECORD;
@@ -512,7 +547,7 @@ BEGIN
 	-- table and detecting conflicts
 	FOR r IN 
 		INSERT INTO spent_outs AS so
-		SELECT code, spent_tx_id, spent_idx, input_tx_id FROM unnest(in_ins)
+		SELECT code, spent_tx_id, spent_idx, tx_id FROM unnest(in_ins)
 		ON CONFLICT (code, tx_id, idx) DO UPDATE SET spent_by=EXCLUDED.spent_by, prev_spent_by=so.spent_by
 		RETURNING *
 	LOOP
@@ -549,7 +584,7 @@ BEGIN
 		SELECT i.*, o.script, o.value, o.asset_id FROM
 		(SELECT * FROM unnest(in_ins)) i (code, input_tx_id, input_idx, spent_tx_id, spent_idx)
 		JOIN outs o ON i.code=o.code AND i.spent_tx_id=o.tx_id AND i.spent_idx=o.idx
-	ON CONFLICT DO NOTHING;
+		ON CONFLICT DO NOTHING;
 END;
 $$ LANGUAGE plpgsql;
 

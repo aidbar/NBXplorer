@@ -427,8 +427,8 @@ namespace NBXplorer
 			if (tip is null)
 				return Array.Empty<TrackedTransaction>();
 			var utxos = await 
-				connection.Connection.QueryAsync<(string tx_id, string block_id, string source, string out_tx_id, int idx, string script, long value, bool immature, string keypath, DateTime seen_at)>(
-				"SELECT io.tx_id, io.blk_id, io.source, out_tx_id, io.idx, io.script, io.value, io.immature, ts.keypath, io.seen_at " +
+				connection.Connection.QueryAsync<(string tx_id, long idx, string block_id, bool is_out, string spent_tx_id, long spent_idx, string script, long value, bool immature, string keypath, DateTime seen_at)>(
+				"SELECT io.tx_id, io.idx, io.blk_id, io.is_out, io.spent_tx_id, io.spent_idx, io.script, io.value, io.immature, ts.keypath, io.seen_at " +
 				"FROM tracked_scripts ts " +
 				"JOIN ins_outs io USING (code, script) " +
 				"WHERE ts.code=@code AND ts.wallet_id=@walletId", new { code = Network.CryptoCode, walletId = trackedSource.GetLegacyWalletId(Network) });
@@ -440,19 +440,19 @@ namespace NBXplorer
 				if (txIdStr != null && utxo.tx_id != txIdStr)
 					continue;
 				var tracked = GetTrackedTransaction(trackedSource, utxo.tx_id, utxo.block_id, utxo.seen_at, trackedById);
-				if (utxo.source == "OUTPUT")
+				if (utxo.is_out)
 				{
 					var txout = Network.NBitcoinNetwork.Consensus.ConsensusFactory.CreateTxOut();
 					txout.Value = Money.Satoshis(utxo.value);
 					txout.ScriptPubKey = Script.FromHex(utxo.script);
-					tracked.ReceivedCoins.Add(new Coin(new OutPoint(tracked.Key.TxId, utxo.idx), txout));
+					tracked.ReceivedCoins.Add(new Coin(new OutPoint(tracked.Key.TxId, (uint)utxo.idx), txout));
 					tracked.IsCoinBase = utxo.immature;
 					if (utxo.keypath is string)
 						tracked.KnownKeyPathMapping.Add(txout.ScriptPubKey, KeyPath.Parse(utxo.keypath));
 				}
 				else
 				{
-					tracked.SpentOutpoints.Add(new OutPoint(uint256.Parse(utxo.out_tx_id), utxo.idx));
+					tracked.SpentOutpoints.Add(new OutPoint(uint256.Parse(utxo.spent_tx_id), (uint)utxo.spent_idx));
 				}
 			}
 

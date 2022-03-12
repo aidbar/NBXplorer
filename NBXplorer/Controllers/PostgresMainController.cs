@@ -95,7 +95,7 @@ namespace NBXplorer.Controllers
 				string keypath,
 				bool mempool,
 				bool spent_mempool,
-				DateTime tx_seen_at)>($"SELECT height, tx_id, wu.idx, value, script, {column}, mempool, spent_mempool, tx_seen_at FROM wallets_utxos wu {join} WHERE code=@code AND wallet_id=@walletId AND immature IS FALSE", new { code = network.CryptoCode, walletId = trackedSource.GetLegacyWalletId(network) });
+				DateTime tx_seen_at)>($"SELECT height, tx_id, wu.idx, value, script, {column}, mempool, spent_mempool, seen_at FROM wallets_utxos wu {join} WHERE code=@code AND wallet_id=@walletId AND immature IS FALSE", new { code = network.CryptoCode, walletId = trackedSource.GetLegacyWalletId(network) });
 			UTXOChanges changes = new UTXOChanges()
 			{
 				CurrentHeight = (int)height,

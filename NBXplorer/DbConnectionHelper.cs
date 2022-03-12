@@ -61,7 +61,7 @@ namespace NBXplorer
 				if (idx != 0)
 					builder.Append(',');
 				// No injection possible, those are strongly typed
-				builder.Append($"ROW('{Network.CryptoCode}', '{i.inputTxId}', {i.inputIdx}, '{i.spentOutpoint.Hash}', {i.spentOutpoint.N})::ins");
+				builder.Append($"ROW('{Network.CryptoCode}', '{i.inputTxId}', {i.inputIdx}, '{i.spentOutpoint.Hash}', {i.spentOutpoint.N})::new_ins");
 				idx++;
 			}
 			if (idx == 0)
