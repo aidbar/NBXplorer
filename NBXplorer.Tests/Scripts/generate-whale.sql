@@ -28,10 +28,13 @@ WHERE MOD(s, 2) = 1;
 
 INSERT INTO wallets VALUES ('WHALE');
 INSERT INTO descriptors VALUES ('BTC', 'WHALEDESC', 0);
-INSERT INTO wallets_descriptors VALUES ('BTC', 'WHALE', 'WHALEDESC');
 
 INSERT INTO descriptors_scripts
 SELECT 'BTC', 'WHALEDESC', s, encode(sha256(('s-' || s)::bytea), 'hex') script, s
+FROM generate_series(0, 223000) s;
+
+INSERT INTO wallets_scripts
+SELECT 'BTC', encode(sha256(('s-' || s)::bytea), 'hex') script, 'WHALE', 'WHALEDESC', s
 FROM generate_series(0, 223000) s;
 
 CALL new_block_updated('BTC', 100);

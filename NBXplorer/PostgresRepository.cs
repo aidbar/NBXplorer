@@ -152,7 +152,8 @@ namespace NBXplorer
 		public async Task<int> GenerateAddresses(DerivationStrategyBase strategy, DerivationFeature derivationFeature, GenerateAddressQuery query = null)
 		{
 			await using var connection = await connectionFactory.CreateConnectionHelper(Network);
-			return await connection.GenerateAddresses(new LegacyDescriptor(strategy, KeyPathTemplates.GetKeyPathTemplate(derivationFeature)), query);
+			var wid = new DerivationSchemeTrackedSource(strategy).GetLegacyWalletId(Network);
+			return await connection.GenerateAddresses(wid, new LegacyDescriptor(strategy, KeyPathTemplates.GetKeyPathTemplate(derivationFeature)), query);
 		}
 
 		public Task<int> GenerateAddresses(DerivationStrategyBase strategy, DerivationFeature derivationFeature, int maxAddresses)
@@ -218,7 +219,7 @@ namespace NBXplorer
 				result.AddRange(s, Array.Empty<KeyPathInformation>());
 			var command = connection.CreateCommand();
 			StringBuilder builder = new StringBuilder();
-			builder.Append("SELECT ts.script, ts.addr, ts.source, ts.descriptor, ts.keypath FROM ( VALUES ");
+			builder.Append("SELECT ts.script, ts.addr, ts.descriptor, ts.keypath FROM ( VALUES ");
 			int idx = 0;
 			foreach (var s in scripts)
 			{
@@ -230,19 +231,23 @@ namespace NBXplorer
 			if (idx == 0)
 				return result;
 			builder.Append(") r (code, script)," +
-				" LATERAL (SELECT DISTINCT script, addr, source, descriptor, keypath FROM tracked_scripts ts WHERE ts.code=r.code AND ts.script=r.script) ts;");
+				" LATERAL (" +
+				"	SELECT ws.script, s.addr, descriptor, ds.keypath " +
+				"	FROM wallets_scripts ws " +
+				"	LEFT JOIN descriptors_scripts ds USING (code, descriptor, idx) " +
+				"	JOIN scripts s ON s.code=ws.code AND s.script=ws.script " +
+				"   WHERE ws.code=r.code AND ws.script=r.script) ts;");
 			command.CommandText = builder.ToString();
 			await using var reader = await command.ExecuteReaderAsync();
 			while (await reader.ReadAsync())
 			{
-				var source = reader.GetString(2);
-				bool isDescriptor = source == "DESCRIPTOR";
-				bool isExplicit = source == "EXPLICIT";
-				var descriptor = isDescriptor ? Descriptor.Parse(reader.GetString(3), Network) : null;
+				bool isExplicit = reader.IsDBNull(3);
+				bool isDescriptor = !isExplicit;
+				var descriptor = isDescriptor ? Descriptor.Parse(reader.GetString(2), Network) : null;
 				var script = Script.FromHex(reader.GetString(0));
 				var derivationStrategy = (descriptor as LegacyDescriptor)?.DerivationStrategy;
 				var addr = BitcoinAddress.Create(reader.GetString(1), Network.NBitcoinNetwork);
-				var keypath = isDescriptor ? KeyPath.Parse(reader.GetString(4)) : null;
+				var keypath = isDescriptor ? KeyPath.Parse(reader.GetString(3)) : null;
 				result.Add(script, new KeyPathInformation()
 				{
 					Address = addr,
@@ -428,10 +433,11 @@ namespace NBXplorer
 				return Array.Empty<TrackedTransaction>();
 			var utxos = await 
 				connection.Connection.QueryAsync<(string tx_id, long idx, string block_id, bool is_out, string spent_tx_id, long spent_idx, string script, long value, bool immature, string keypath, DateTime seen_at)>(
-				"SELECT io.tx_id, io.idx, io.blk_id, io.is_out, io.spent_tx_id, io.spent_idx, io.script, io.value, io.immature, ts.keypath, io.seen_at " +
-				"FROM tracked_scripts ts " +
-				"JOIN ins_outs io USING (code, script) " +
-				"WHERE ts.code=@code AND ts.wallet_id=@walletId", new { code = Network.CryptoCode, walletId = trackedSource.GetLegacyWalletId(Network) });
+				"SELECT io.tx_id, io.idx, io.blk_id, io.is_out, io.spent_tx_id, io.spent_idx, io.script, io.value, io.immature, ds.keypath, io.seen_at " +
+				"FROM wallets_scripts ws " +
+				"LEFT JOIN descriptors_scripts ds USING (code, descriptor, idx) " +
+				"JOIN ins_outs io ON io.code=ws.code AND io.script=ws.script " +
+				"WHERE ws.code=@code AND ws.wallet_id=@walletId", new { code = Network.CryptoCode, walletId = trackedSource.GetLegacyWalletId(Network) });
 			utxos.TryGetNonEnumeratedCount(out int c);
 			var trackedById = new Dictionary<string, TrackedTransaction>(c);
 			var txIdStr = txId?.ToString();
@@ -509,12 +515,14 @@ namespace NBXplorer
 					script = kpi.ScriptPubKey.ToHex(),
 					address = kpi.Address.ToString(),
 					idx = kpi.GetIndex(),
-					keypath = kpi.KeyPath.ToString()
-					// TODO REDEEM??
+					keypath = kpi.KeyPath.ToString(),
+					walletid = kpi.TrackedSource.GetLegacyWalletId(Network)
 				})
 				.ToArray();
-			await connection.Connection.ExecuteAsync("INSERT INTO scripts VALUES (@code, @script, @address, 't') ON CONFLICT (code, script) DO UPDATE SET used='t';", parameters);
-			await connection.Connection.ExecuteAsync("INSERT INTO descriptors_scripts VALUES (@code, @descriptor, @idx, @script, @keypath) ON CONFLICT DO NOTHING;", parameters);
+			await connection.Connection.ExecuteAsync(
+				"INSERT INTO scripts VALUES (@code, @script, @address, 't') ON CONFLICT (code, script) DO UPDATE SET used='t';" +
+				"INSERT INTO descriptors_scripts VALUES (@code, @descriptor, @idx, @script, @keypath) ON CONFLICT DO NOTHING;" +
+				"INSERT INTO wallets_scripts VALUES (@code, @script, @walletid, @descriptor, @idx) ON CONFLICT DO NOTHING;", parameters);
 		}
 
 		private LegacyDescriptor ToDescriptor(TrackedSource trackedSource, KeyPathTemplate keyPathTemplate)
@@ -679,7 +687,7 @@ namespace NBXplorer
 			await conn.Connection.ExecuteAsync(
 				"INSERT INTO wallets VALUES (@walletId) ON CONFLICT DO NOTHING;" +
 				"INSERT INTO scripts VALUES (@code, @script, @addr) ON CONFLICT DO NOTHING;" +
-				"INSERT INTO wallets_explicit_scripts VALUES (@code, @walletId, @script) ON CONFLICT DO NOTHING"
+				"INSERT INTO wallets_scripts VALUES (@code, @script, @walletId) ON CONFLICT DO NOTHING"
 				, new { code = Network.CryptoCode, script = address.ScriptPubKey.ToHex(), addr = address.ScriptPubKey.GetDestinationAddress(Network.NBitcoinNetwork).ToString(), walletId });
 		}
 

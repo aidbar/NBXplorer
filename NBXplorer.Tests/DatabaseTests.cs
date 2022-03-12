@@ -39,7 +39,14 @@ namespace NBXplorer.Tests
 			await Benchmark(conn, "SELECT * FROM wallets_utxos;", 50);
 			await Benchmark(conn, "CALL new_block_updated('BTC', 100);", 50);
 			await Benchmark(conn, "CALL orphan_blocks('BTC', 1000000);", 200);
-			await Benchmark(conn, "SELECT ts.script, ts.addr, ts.source, ts.descriptor, ts.keypath FROM ( VALUES ('BTC', 'blah'), ('BTC', 'blah'), ('BTC', 'blah'), ('BTC', 'blah')) r (code, script), LATERAL (SELECT DISTINCT script, addr, source, descriptor, keypath FROM tracked_scripts ts WHERE ts.code=r.code AND ts.script=r.script) ts;", 50);
+			await Benchmark(conn,
+				"SELECT ts.script, ts.addr, ts.descriptor, ts.keypath FROM ( VALUES ('BTC', 'blah'), ('BTC', 'blah'), ('BTC', 'blah'), ('BTC', 'blah')) r (code, script), " +
+				" LATERAL(" +
+				"	SELECT ws.script, s.addr, descriptor, ds.keypath " +
+				"	FROM wallets_scripts ws " +
+				"	LEFT JOIN descriptors_scripts ds USING (code, descriptor, idx) " +
+				"	JOIN scripts s ON s.code=ws.code AND s.script=ws.script " +
+				"   WHERE ws.code=r.code AND ws.script=r.script) ts;", 50);
 			await Benchmark(conn, "SELECT o.tx_id, o.idx, o.value, o.script FROM (VALUES ('BTC', 'hash', 5), ('BTC', 'hash', 5), ('BTC', 'hash', 5))  r (code, tx_id, idx) JOIN outs o USING (code, tx_id, idx);", 50);
 			await Benchmark(conn, "SELECT height, tx_id, wu.idx, value, script, keypath, mempool, spent_mempool, seen_at  FROM wallets_utxos wu JOIN descriptors_scripts USING (code, script) WHERE code='BTC' AND wallet_id='WHALE' AND immature IS FALSE", 50);
 			await Benchmark(conn, "SELECT * FROM get_wallets_histogram('2022-01-01'::timestamptz, '2022-02-01'::timestamptz, interval '1 day') WHERE wallet_id='WHALE';", 50);
@@ -125,7 +132,7 @@ namespace NBXplorer.Tests
 			await conn.ExecuteAsync(
 				"INSERT INTO wallets VALUES ('Alice');" +
 				"INSERT INTO scripts VALUES ('BTC', 'a1', '');" +
-				"INSERT INTO wallets_explicit_scripts VALUES ('BTC', 'Alice', 'a1');" +
+				"INSERT INTO wallets_scripts VALUES ('BTC', 'a1', 'Alice');" +
 				"INSERT INTO txs (code, tx_id, mempool) VALUES ('BTC', 't1', 't');" +
 				"INSERT INTO outs VALUES('BTC', 't1', 10, 'a1', 5); ");
 			Assert.Single(await conn.QueryAsync("SELECT * FROM wallets_utxos WHERE wallet_id='Alice'"));
@@ -241,7 +248,7 @@ namespace NBXplorer.Tests
 				"('BTC', 'bob1', '')," +
 				"('BTC', 'bob2', '')," +
 				"('BTC', 'bob3', '');" +
-				"INSERT INTO wallets_explicit_scripts VALUES " +
+				"INSERT INTO wallets_scripts (code, wallet_id, script) VALUES " +
 				"('BTC', 'Alice', 'alice1')," +
 				"('BTC', 'Alice', 'alice2')," +
 				"('BTC', 'Alice', 'alice3')," +

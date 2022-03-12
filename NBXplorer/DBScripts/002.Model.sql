@@ -398,47 +398,17 @@ CREATE TABLE IF NOT EXISTS wallets (
   metadata JSONB DEFAULT NULL,
   created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP);
 
--- A wallet can track a specific script, add those to this table
-CREATE TABLE IF NOT EXISTS wallets_explicit_scripts (
-code TEXT NOT NULL,
-wallet_id TEXT NOT NULL REFERENCES wallets ON DELETE CASCADE,
-script TEXT NOT NULL,
-PRIMARY KEY (code, script, wallet_id),
-FOREIGN KEY (code, script) REFERENCES scripts ON DELETE CASCADE
+CREATE TABLE IF NOT EXISTS wallets_scripts (
+  code TEXT NOT NULL,
+  script TEXT NOT NULL,
+  wallet_id TEXT REFERENCES wallets ON DELETE CASCADE,
+  descriptor TEXT DEFAULT NULL,
+  idx BIGINT DEFAULT NULL,
+  PRIMARY KEY (code, script, wallet_id),
+  FOREIGN KEY (code, script) REFERENCES scripts ON DELETE CASCADE,
+  FOREIGN KEY (code, descriptor, idx) REFERENCES descriptors_scripts ON DELETE CASCADE
 );
-CREATE INDEX IF NOT EXISTS wes_by_wallet_id ON wallets_explicit_scripts (wallet_id);
-
-CREATE TABLE IF NOT EXISTS wallets_descriptors (
-code TEXT NOT NULL,
-wallet_id TEXT NOT NULL REFERENCES wallets ON DELETE CASCADE,
-descriptor TEXT NOT NULL,
-PRIMARY KEY (code, descriptor, wallet_id),
-FOREIGN KEY (code, descriptor) REFERENCES descriptors ON DELETE CASCADE
-);
-CREATE INDEX IF NOT EXISTS wd_by_wallet_id ON wallets_descriptors (wallet_id);
-
-CREATE OR REPLACE VIEW wallets_scripts AS
-SELECT DISTINCT * FROM
-(
-  SELECT dw.wallet_id, ds.code, ds.script
-  FROM descriptors_scripts ds
-  JOIN wallets_descriptors dw USING (code, descriptor)
-  UNION ALL
-  SELECT ws.wallet_id, ws.code, ws.script
-  FROM wallets_explicit_scripts ws
-) q;
-
-
--- Returns the scripts along with the wallet_id tracking them
-CREATE OR REPLACE VIEW tracked_scripts AS
-SELECT s.code, s.script, s.addr, dw.wallet_id, 'DESCRIPTOR' source, ds.descriptor, ds.keypath, ds.idx
-FROM descriptors_scripts ds
-INNER JOIN scripts s USING (code, script)
-INNER JOIN wallets_descriptors dw USING (code, descriptor)
-UNION ALL
-SELECT s.code, s.script, s.addr, ws.wallet_id, 'EXPLICIT' source, NULL, NULL, NULL
-FROM wallets_explicit_scripts ws
-INNER JOIN scripts s USING (code, script);
+CREATE INDEX IF NOT EXISTS scripts_by_wallet_id_idx ON wallets_scripts(code, wallet_id);
 
 -- Returns a log of inputs and outputs
 -- This table is denormalized to improve performance on queries involving seen_at
@@ -492,10 +462,7 @@ WHERE o.spent_blk_id IS NULL AND (o.blk_id IS NOT NULL OR (o.mempool IS TRUE AND
 --          If you want the available UTXOs which can be spent use 'WHERE spent_mempool IS FALSE AND immature IS FALSE'.
 CREATE OR REPLACE VIEW wallets_utxos AS
 SELECT q.wallet_id, u.* FROM utxos u,
--- Note that using LATERAL SELECT DISTINCT is necessary to force postgres to use 'utxos' as outer table for the join.
--- Since utxos doesn't have lot's of record, this is the cheapest way.
--- Without this hack, postgres attempt to optimize by making 'wallets_scripts' as outer table, which mean full scan over wallets_scripts and wallets_scripts has lots of rows...
-LATERAL (SELECT DISTINCT ws.wallet_id, ws.code, ws.script
+LATERAL (SELECT ws.wallet_id, ws.code, ws.script
 		 FROM wallets_scripts ws
          WHERE ws.code = u.code AND ws.script = u.script) q;
 
@@ -634,7 +601,7 @@ RETURNS TABLE(wallet_id TEXT, code TEXT, asset_id TEXT, tx_id TEXT, seen_at TIME
 				   io.seen_at,
 				   COALESCE(SUM (value) FILTER (WHERE is_out IS TRUE), 0) -  COALESCE(SUM (value) FILTER (WHERE is_out IS FALSE), 0) balance_change
 			FROM ins_outs io,
-			LATERAL (SELECT DISTINCT ts.wallet_id, ts.code, ts.script
+			LATERAL (SELECT ts.wallet_id, ts.code, ts.script
 					 FROM wallets_scripts ts
 					 WHERE ts.code = io.code AND ts.script = io.script) q
 			WHERE (blk_id IS NOT NULL OR (mempool IS TRUE AND replaced_by IS NULL))

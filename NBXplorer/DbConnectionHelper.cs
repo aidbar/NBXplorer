@@ -112,15 +112,14 @@ namespace NBXplorer
 				await Connection.ExecuteAsync("INSERT INTO txs VALUES (@code, @id, @raw, @blk_id, @blk_idx, @mempool, NULL, @seen_at) ON CONFLICT (code, tx_id) DO UPDATE SET seen_at=LEAST(@seen_at, txs.seen_at), raw = COALESCE(@raw, txs.raw)", parameters);
 			await Connection.ExecuteAsync("INSERT INTO blks_txs VALUES (@code, @blk_id, @id, @blk_idx) ON CONFLICT DO NOTHING", parameters.Where(p => p.blk_id is not null).AsList());
 		}
-		public async Task CreateDescriptors(string walletId, Descriptor[] descriptors)
+		public async Task CreateDescriptors(Descriptor[] descriptors)
 		{
-			var rows = descriptors.Select(c => new { code = Network.CryptoCode, descriptor = c.ToString(), walletId }).ToArray();
+			var rows = descriptors.Select(c => new { code = Network.CryptoCode, descriptor = c.ToString() }).ToArray();
 			await Connection.ExecuteAsync(
-				"INSERT INTO descriptors VALUES (@code, @descriptor) ON CONFLICT DO NOTHING;" +
-				"INSERT INTO wallets_descriptors VALUES (@code, @walletId, @descriptor) ON CONFLICT DO NOTHING", rows);
+				"INSERT INTO descriptors VALUES (@code, @descriptor) ON CONFLICT DO NOTHING;", rows);
 		}
-		record DescriptorScriptInsert(string code, string descriptor, int idx, string script, string keypath, string addr);
-		public async Task<int> GenerateAddresses(Descriptor descriptor, GenerateAddressQuery? query)
+		record DescriptorScriptInsert(string code, string descriptor, int idx, string script, string keypath, string addr, string walletid);
+		public async Task<int> GenerateAddresses(string walletId, Descriptor descriptor, GenerateAddressQuery? query)
 		{
 			query = query ?? new GenerateAddressQuery();
 			var used = await Connection.QueryAsync<bool>(
@@ -145,7 +144,7 @@ namespace NBXplorer
 			{
 				var wid = new DerivationSchemeTrackedSource(legacy.DerivationStrategy).GetLegacyWalletId(Network);
 				await this.CreateWallet(wid);
-				await this.CreateDescriptors(wid, new[] { descriptor });
+				await this.CreateDescriptors(new[] { descriptor });
 				goto retry;
 			}
 			if (row is null)
@@ -166,12 +165,14 @@ namespace NBXplorer
 					i,
 					derivation.ScriptPubKey.ToHex(),
 					line.KeyPathTemplate.GetKeyPath(i, false).ToString(),
-					derivation.ScriptPubKey.GetDestinationAddress(Network.NBitcoinNetwork).ToString());
+					derivation.ScriptPubKey.GetDestinationAddress(Network.NBitcoinNetwork).ToString(),
+					walletId);
 			});
 
 			await Connection.ExecuteAsync(
 				"INSERT INTO scripts VALUES (@code, @script, @addr) ON CONFLICT DO NOTHING;" +
-				"INSERT INTO descriptors_scripts VALUES (@code, @descriptor, @idx, @script, @keypath) ON CONFLICT DO NOTHING;", linesScriptpubkeys);
+				"INSERT INTO descriptors_scripts VALUES (@code, @descriptor, @idx, @script, @keypath) ON CONFLICT DO NOTHING;" +
+				"INSERT INTO wallets_scripts VALUES(@code, @script, @walletid, @descriptor, @idx) ON CONFLICT DO NOTHING;", linesScriptpubkeys);
 			await Connection.ExecuteAsync("UPDATE descriptors SET next_index=@next_index WHERE code=@code AND descriptor=@descriptor AND next_index < @next_index;", new { code = Network.CryptoCode, descriptor = descStr, next_index = nextIndex + toGenerate });
 			return toGenerate;
 		}
