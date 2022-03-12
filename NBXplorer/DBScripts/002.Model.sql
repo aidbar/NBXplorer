@@ -563,7 +563,7 @@ CREATE MATERIALIZED VIEW IF NOT EXISTS wallets_history AS
 		   COALESCE(SUM (value) FILTER (WHERE is_out IS TRUE), 0) -  COALESCE(SUM (value) FILTER (WHERE is_out IS FALSE), 0) balance_change,
 		   SUM(COALESCE(SUM (value) FILTER (WHERE is_out IS TRUE), 0) -  COALESCE(SUM (value) FILTER (WHERE is_out IS FALSE), 0)) OVER (PARTITION BY wallet_id, io.code, asset_id ORDER BY io.seen_at) balance_total
 	FROM ins_outs io,
-	LATERAL (SELECT DISTINCT ts.wallet_id, ts.code, ts.script
+	LATERAL (SELECT ts.wallet_id, ts.code, ts.script
 			 FROM wallets_scripts ts
 			 WHERE ts.code = io.code AND ts.script = io.script) q
 	WHERE blk_id IS NOT NULL
