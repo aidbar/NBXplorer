@@ -1,5 +1,5 @@
 ﻿-- This schema is quite simple:
--- The main tables are blks, blks_txs, txs, ins, outs, ins_outs, scripts, wallets_scripts.
+-- The main tables are blks, blks_txs, txs, ins, outs, ins_outs, descriptors, desriptors_scripts, scripts, wallets, wallets_descriptors, wallets_scripts.
 -- Those represent common concepts in the UTXO model.
 -- Note that the model is heavily denormalized. Columns of txs are present in ins, outs, ins_outs.
 -- ins_outs represent the same informations as ins and outs, but in a single table indexed with a timestamp.
@@ -11,6 +11,8 @@
 -- There is one materialized view called wallets_history, which provide an history of wallets (time ordered list of wallet_id, code, asset_id, balance-change, total-balance)
 -- refreshing this view is quite heavy (It can take between 5 and 10 seconds for huge database).
 -- This view is specifically useful for reports and creating histograms via get_wallets_histogram.
+-- And indexer is responsible for creating wallets, associating descriptor, deriving scripts and adding them in descriptors_scripts.
+-- Add relevant ins/outs. (For now this part is difficult, soon will provide better solution)
 
 CREATE TABLE IF NOT EXISTS blks (
   code TEXT NOT NULL,
@@ -560,6 +562,10 @@ CREATE TABLE IF NOT EXISTS spent_outs (
   FOREIGN KEY (code, prev_spent_by) REFERENCES txs ON DELETE CASCADE
 );
 
+-- Provide an history of wallets (time ordered list of wallet_id, code, asset_id, balance-change, total-balance)
+-- This view is intensive to compute (for 220K transactions, it takes around 5 seconds)
+-- This is meant to be used for reports and histograms.
+-- If you want the latest history of a wallet, use get_wallets_recent instead.
 CREATE MATERIALIZED VIEW IF NOT EXISTS wallets_history AS
 	SELECT q.wallet_id,
 		   io.code,
@@ -594,6 +600,7 @@ RETURNS TABLE(date TIMESTAMPTZ, balance_change BIGINT, balance BIGINT) AS $$
   ) q USING (s)
 $$  LANGUAGE SQL STABLE;
 
+-- Useful view to see what has going on recently in a wallet. Doesn't depends on wallets_history.
 CREATE OR REPLACE FUNCTION get_wallets_recent(in_wallet_id TEXT, in_limit INT, in_offset INT)
 RETURNS TABLE(wallet_id TEXT, code TEXT, asset_id TEXT, tx_id TEXT, seen_at TIMESTAMPTZ, balance_change BIGINT, balance_total BIGINT) AS $$
 	SELECT q.wallet_id, q.code, q.asset_id, q.tx_id, q.seen_at, q.balance_change, COALESCE((q.latest_balance - LAG(balance_change_sum, 1) OVER (ORDER BY seen_at DESC)), q.latest_balance) balance_total FROM
