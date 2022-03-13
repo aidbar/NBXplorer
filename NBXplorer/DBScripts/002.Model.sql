@@ -27,30 +27,46 @@ CREATE INDEX IF NOT EXISTS txs_unconf_idx ON txs (code) INCLUDE (tx_id) WHERE me
 
 CREATE OR REPLACE FUNCTION txs_denormalize() RETURNS trigger LANGUAGE plpgsql AS $$
 DECLARE
-  q RECORD;
+	r RECORD;
 BEGIN
   -- Propagate any change to table outs, ins, and ins_outs
-  FOR q IN SELECT t.code, t.tx_id, t.blk_id, t.blk_idx, t.mempool, t.replaced_by, t.seen_at
-	FROM new_txs
-	JOIN txs t USING (code, tx_id)
-  LOOP
-	UPDATE outs o SET  blk_id = q.blk_id, blk_idx = q.blk_idx, mempool = q.mempool, replaced_by = q.replaced_by, seen_at = q.seen_at
-	WHERE o.code=q.code AND o.tx_id=q.tx_id;
+	UPDATE outs o SET  blk_id = NEW.blk_id, blk_idx = NEW.blk_idx, mempool = NEW.mempool, replaced_by = NEW.replaced_by, seen_at = NEW.seen_at
+	WHERE o.code=NEW.code AND o.tx_id=NEW.tx_id;
 
-	UPDATE ins i SET  blk_id = q.blk_id, blk_idx = q.blk_idx, mempool = q.mempool, replaced_by = q.replaced_by, seen_at = q.seen_at
-	WHERE i.code=q.code AND i.input_tx_id=q.tx_id;
+	UPDATE ins i SET  blk_id = NEW.blk_id, blk_idx = NEW.blk_idx, mempool = NEW.mempool, replaced_by = NEW.replaced_by, seen_at = NEW.seen_at
+	WHERE i.code=NEW.code AND i.input_tx_id=NEW.tx_id;
 
-	UPDATE ins_outs io SET  blk_id = q.blk_id, blk_idx = q.blk_idx, mempool = q.mempool, replaced_by = q.replaced_by, seen_at = q.seen_at
-	WHERE io.code=q.code AND io.tx_id=q.tx_id;
-  END LOOP;
-  RETURN NULL;
+	UPDATE ins_outs io SET  blk_id = NEW.blk_id, blk_idx = NEW.blk_idx, mempool = NEW.mempool, replaced_by = NEW.replaced_by, seen_at = NEW.seen_at
+	WHERE io.code=NEW.code AND io.tx_id=NEW.tx_id;
+
+	-- Propagate any replaced_by / mempool to ins/outs/ins_outs and to the children
+	IF NEW.replaced_by != OLD.replaced_by THEN
+	  FOR r IN 
+	  	SELECT code, input_tx_id, replaced_by FROM ins
+		WHERE code=NEW.code AND spent_tx_id=NEW.tx_id AND replaced_by != NEW.replaced_by
+	  LOOP
+		UPDATE txs SET replaced_by=NEW.replaced_by
+		WHERE code=r.code AND tx_id=r.input_tx_id;
+	  END LOOP;
+	END IF;
+
+	IF NEW.mempool != OLD.mempool THEN
+	  FOR r IN 
+	  	SELECT code, input_tx_id, mempool FROM ins
+		WHERE code=NEW.code AND spent_tx_id=NEW.tx_id AND mempool != NEW.mempool
+	  LOOP
+		UPDATE txs SET mempool=NEW.mempool
+		WHERE code=r.code AND tx_id=r.input_tx_id;
+	  END LOOP;
+	END IF;
+
+	RETURN NEW;
 END
 $$;
 
 CREATE TRIGGER txs_insert_trigger
   AFTER UPDATE ON txs
-  REFERENCING NEW TABLE AS new_txs
-  FOR EACH STATEMENT EXECUTE PROCEDURE txs_denormalize();
+  FOR EACH ROW EXECUTE PROCEDURE txs_denormalize();
 
 
 -- Get the tip (Note we don't returns blks directly, since it prevent function inlining)
@@ -93,42 +109,21 @@ BEGIN
 	WHERE t.code=q.code AND t.tx_id=q.tx_id;
 
 	-- Turn mempool flag of txs with inputs spent by confirmed blocks to false
-	FOR r IN
-	  WITH q AS (
-	  SELECT mempool_ins.code, mempool_ins.tx_id mempool_tx_id, confirmed_ins.tx_id confirmed_tx_id
-	  FROM 
-		(SELECT i.code, i.spent_tx_id, i.spent_idx, t.tx_id FROM ins i
-		JOIN txs t ON t.code=i.code AND t.tx_id=i.input_tx_id
-		WHERE i.code=in_code AND t.mempool IS TRUE) mempool_ins
-	  LEFT JOIN (
-		SELECT i.code, i.spent_tx_id, i.spent_idx, t.tx_id FROM ins i
-		JOIN txs t ON t.code=i.code AND t.tx_id=i.input_tx_id
-		WHERE i.code=in_code AND t.blk_id IS NOT NULL
-	  ) confirmed_ins USING (code, spent_tx_id, spent_idx)
-	  WHERE confirmed_ins.tx_id IS NOT NULL) -- The use of LEFT JOIN is intentional, it forces postgres to use a specific index
-	  UPDATE txs t SET mempool='f', replaced_by=q.confirmed_tx_id
-	  FROM q
-	  WHERE t.code=q.code AND t.tx_id=q.mempool_tx_id
-	  RETURNING t.code, t.tx_id, t.replaced_by
-	LOOP
-	  -- Update also the replaced_by of all descendants
-	  WITH RECURSIVE cte(code, tx_id) AS
-	  (
-		  SELECT  t.code, t.tx_id FROM txs t
-		  WHERE
-			  t.code=r.code AND
-			  t.tx_id=r.tx_id
-		  UNION
-		  SELECT t.code, t.tx_id FROM cte c
-		  JOIN outs o USING (code, tx_id)
-		  JOIN ins i ON i.code=c.code AND i.spent_tx_id=o.tx_id AND i.spent_idx=o.idx
-		  JOIN txs t ON t.code=c.code AND t.tx_id=i.input_tx_id
-		  WHERE t.code=c.code AND t.mempool IS TRUE
-	  )
-	  UPDATE txs t SET mempool='f', replaced_by=r.replaced_by
-	  FROM cte
-	  WHERE cte.code=t.code AND cte.tx_id=t.tx_id;
-	END LOOP;
+	WITH q AS (
+	SELECT mempool_ins.code, mempool_ins.tx_id mempool_tx_id, confirmed_ins.tx_id confirmed_tx_id
+	FROM 
+	  (SELECT i.code, i.spent_tx_id, i.spent_idx, t.tx_id FROM ins i
+	  JOIN txs t ON t.code=i.code AND t.tx_id=i.input_tx_id
+	  WHERE i.code=in_code AND t.mempool IS TRUE) mempool_ins
+	LEFT JOIN (
+	  SELECT i.code, i.spent_tx_id, i.spent_idx, t.tx_id FROM ins i
+	  JOIN txs t ON t.code=i.code AND t.tx_id=i.input_tx_id
+	  WHERE i.code=in_code AND t.blk_id IS NOT NULL
+	) confirmed_ins USING (code, spent_tx_id, spent_idx)
+	WHERE confirmed_ins.tx_id IS NOT NULL) -- The use of LEFT JOIN is intentional, it forces postgres to use a specific index
+	UPDATE txs t SET mempool='f', replaced_by=q.confirmed_tx_id
+	FROM q
+	WHERE t.code=q.code AND t.tx_id=q.mempool_tx_id;
 
 
 
