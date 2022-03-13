@@ -739,7 +739,7 @@ namespace NBXplorer
 			await using var conn = await GetConnection();
 			var tip = await conn.GetTip();
 			if (tip is not null && newTip.Previous != tip.Hash)
-				await conn.Connection.ExecuteAsync("CALL orphan_blocks(@code, @height);", new { code = Network.CryptoCode, height = newTip.Height });
+				await conn.Connection.ExecuteAsync("UPDATE blks SET confirmed='f' WHERE code=@code AND height >= @height;", new { code = Network.CryptoCode, height = newTip.Height });
 			var parameters = new
 			{
 				code = Network.CryptoCode,
@@ -748,17 +748,17 @@ namespace NBXplorer
 				height = newTip.Height
 			};
 			await conn.Connection.ExecuteAsync(
-				"INSERT INTO blks VALUES (@code, @id, @height, @prev) ON CONFLICT (code, blk_id) DO UPDATE SET confirmed='t';", parameters);
+				"INSERT INTO blks VALUES (@code, @id, @height, @prev) ON CONFLICT DO NOTHING;", parameters);
 		}
 
-		public async Task NewBlockCommit()
+		public async Task NewBlockCommit(uint256 blockHash)
 		{
 			await using var conn = await GetConnection();
-			await conn.Connection.ExecuteAsync("CALL new_block_updated(@code, @maturity)",
+			await conn.Connection.ExecuteAsync("UPDATE blks SET confirmed='t' WHERE blk_id=@blk_id AND confirmed IS FALSE;",
 				new
 				{
 					code = Network.CryptoCode,
-					maturity = Network.NBitcoinNetwork.Consensus.CoinbaseMaturity
+					blk_id = blockHash.ToString()
 				});
 		}
 	}

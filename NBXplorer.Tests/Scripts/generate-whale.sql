@@ -6,7 +6,8 @@ INSERT INTO blks
 SELECT 'BTC', 
 	   encode(sha256(('b-' || s)::bytea), 'hex') blk_id,
 	   s height,
-	   encode(sha256(('b-' || (s-1))::bytea), 'hex') prev_id
+	   encode(sha256(('b-' || (s-1))::bytea), 'hex') prev_id,
+	   't'
 FROM generate_series(0, 223000) s;
 
 INSERT INTO txs
@@ -119,7 +120,6 @@ INSERT INTO wallets_scripts
 SELECT 'BTC', encode(sha256(('s-' || s)::bytea), 'hex') script, 'WHALE', 'WHALEDESC', s
 FROM generate_series(0, 223000) s;
 
-CALL new_block_updated('BTC', 100);
 ANALYZE;
 REFRESH MATERIALIZED VIEW wallets_history;
 ANALYZE;

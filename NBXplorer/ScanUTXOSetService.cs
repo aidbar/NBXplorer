@@ -294,7 +294,6 @@ namespace NBXplorer
 				trackedTransaction.FirstSeen = blockHeadersByBlockId.TryGetValue(o.BlockId, out var header) && header != null ? header.BlockTime : NBitcoin.Utils.UnixTimeToDateTime(0);
 				return trackedTransaction;
 			}).ToArray());
-			await repo.NewBlockCommit();
 		}
 		private static Dictionary<Script, KeyPath> ToDictionary(IEnumerable<KeyPathInformation> knownScriptMapping)
 		{

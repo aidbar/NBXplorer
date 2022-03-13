@@ -226,7 +226,7 @@ namespace NBXplorer
 		{
 			await Repository.SaveMatches(matches);
 			if (blockHash is not null)
-				await Repository.NewBlockCommit();
+				await Repository.NewBlockCommit(blockHash);
 			_ = AddressPoolService.GenerateAddresses(Network, matches);
 			var saved = await Repository.SaveTransactions(now, matches.Select(m => m.Transaction).Distinct().ToArray(), blockHash);
 			var savedTransactions = saved.ToDictionary(s => s.Transaction.GetHash());
@@ -319,6 +319,7 @@ namespace NBXplorer
 				if (defaultLocation)
 				{
 					await Repository.NewBlock(fork);
+					await Repository.NewBlockCommit(fork.Hash);
 				}
 				Logs.Explorer.LogInformation($"{Network.CryptoCode}: Starting scan at block " + fork.Height);
 

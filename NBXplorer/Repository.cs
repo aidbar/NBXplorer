@@ -1671,7 +1671,7 @@ namespace NBXplorer
 			return Task.CompletedTask;
 		}
 
-		public Task NewBlockCommit()
+		public Task NewBlockCommit(uint256 blockHash)
 		{
 			return Task.CompletedTask;
 		}

@@ -236,10 +236,9 @@ namespace NBXplorer
 			};
 		}
 
-		record BlockRow(System.String blk_id, System.String prev_id, System.Int64 height);
 		public async Task<SlimChainedBlock?> GetTip()
 		{
-			var row = await Connection.QueryFirstOrDefaultAsync<BlockRow>("SELECT blk_id, prev_id, height FROM blks WHERE code=@code AND confirmed = 't' LIMIT 1", new { code = Network.CryptoCode });
+			var row = await Connection.QueryFirstOrDefaultAsync("SELECT * FROM get_tip(@code);", new { code = Network.CryptoCode });
 			if (row is null)
 				return null;
 			return new SlimChainedBlock(uint256.Parse(row.blk_id), uint256.Parse(row.prev_id), (int)row.height);

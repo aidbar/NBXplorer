@@ -1,15 +1,102 @@
-﻿CREATE TABLE IF NOT EXISTS blks (
+﻿-- This schema is quite simple:
+-- The main tables are blks, blks_txs, txs, ins, outs, ins_outs, scripts, wallets_scripts.
+-- Those represent common concepts in the UTXO model.
+-- Note that the model is heavily denormalized. Columns of txs are present in ins, outs, ins_outs.
+-- ins_outs represent the same informations as ins and outs, but in a single table indexed with a timestamp.
+-- The denormalization is kept up to date thanks to a bunch of triggers:
+-- Changes to txs are propagated to ins, outs, and ins_outs.
+-- Changes to ins and outs are propagated to ins_outs.
+-- As such, an indexer just have to insert ins/outs/txs and blks without caring about the denormalization.
+-- The triggers also detect double spend conditions and manage the value of txs.replaced_by accordingly.
+-- There is one materialized view called wallets_history, which provide an history of wallets (time ordered list of wallet_id, code, asset_id, balance-change, total-balance)
+-- refreshing this view is quite heavy (It can take between 5 and 10 seconds for huge database).
+-- This view is specifically useful for reports and creating histograms via get_wallets_histogram.
+
+CREATE TABLE IF NOT EXISTS blks (
   code TEXT NOT NULL,
   blk_id TEXT NOT NULL,
   height BIGINT, prev_id TEXT NOT NULL,
-  confirmed BOOLEAN DEFAULT 't',
+  confirmed BOOLEAN DEFAULT 'f',
   indexed_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (code, blk_id));
 CREATE INDEX IF NOT EXISTS blks_code_height_idx ON blks (code, height DESC) WHERE confirmed IS TRUE;
 
+
+CREATE OR REPLACE FUNCTION blks_confirmed_update_txs() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE
+	r RECORD;
+	maturity_height BIGINT;
+BEGIN
+  IF NEW.confirmed = OLD.confirmed THEN
+	RETURN NEW;
+  END IF;
+
+  IF NEW.confirmed IS TRUE THEN
+	-- TODO: We assume 100 blocks for immaturity. We should probably make this data configurable on separate table.
+	maturity_height := (SELECT height - 100 + 1 FROM get_tip(NEW.code));
+	-- Turn immature flag of outputs to mature
+	-- Note that we never set the outputs back to immature, even in reorg
+	-- But that's such a corner case that we don't care.
+	WITH q AS (
+	  SELECT o.code, o.tx_id, o.idx FROM outs o
+	  JOIN txs t USING (code, tx_id)
+	  JOIN blks b ON b.code=o.code AND b.blk_id=t.blk_id
+	  WHERE o.code=NEW.code AND o.immature IS TRUE AND b.height < maturity_height
+	)
+	UPDATE outs o SET immature='f' 
+	FROM q
+	WHERE o.code=q.code AND o.tx_id=q.tx_id AND o.idx=q.idx;
+
+	-- Turn mempool flag of confirmed txs to false
+	WITH q AS (
+	SELECT t.code, t.tx_id, bt.blk_id, bt.blk_idx FROM txs t
+	JOIN blks_txs bt USING (code, tx_id)
+	WHERE t.code=NEW.code AND bt.blk_id=NEW.blk_id)
+	UPDATE txs t SET mempool='f', replaced_by=NULL, blk_id=q.blk_id, blk_idx=q.blk_idx
+	FROM q
+	WHERE t.code=q.code AND t.tx_id=q.tx_id;
+
+	-- Turn mempool flag of txs with inputs spent by confirmed blocks to false
+	WITH q AS (
+	SELECT mempool_ins.code, mempool_ins.tx_id mempool_tx_id, confirmed_ins.tx_id confirmed_tx_id
+	FROM 
+	  (SELECT i.code, i.spent_tx_id, i.spent_idx, t.tx_id FROM ins i
+	  JOIN txs t ON t.code=i.code AND t.tx_id=i.input_tx_id
+	  WHERE i.code=NEW.code AND t.mempool IS TRUE) mempool_ins
+	LEFT JOIN (
+	  SELECT i.code, i.spent_tx_id, i.spent_idx, t.tx_id FROM ins i
+	  JOIN txs t ON t.code=i.code AND t.tx_id=i.input_tx_id
+	  WHERE i.code=NEW.code AND t.blk_id = NEW.blk_id
+	) confirmed_ins USING (code, spent_tx_id, spent_idx)
+	WHERE confirmed_ins.tx_id IS NOT NULL) -- The use of LEFT JOIN is intentional, it forces postgres to use a specific index
+	UPDATE txs t SET mempool='f', replaced_by=q.confirmed_tx_id
+	FROM q
+	WHERE t.code=q.code AND t.tx_id=q.mempool_tx_id;
+  ELSE -- IF not confirmed anymore
+	-- Set mempool flags of the txs in the blocks back to true
+	WITH q AS (
+	  SELECT code, tx_id FROM blks_txs
+	  WHERE code=NEW.code AND blk_id=NEW.blk_id
+	)
+	-- We can't query over txs.blk_id directly, because it doesn't have an index
+	UPDATE txs t
+	SET mempool='t', blk_id=NULL, blk_idx=NULL
+	FROM q
+	WHERE t.code=q.code AND t.tx_id = q.tx_id;
+  END IF;
+
+  RETURN NEW;
+END
+$$;
+
+CREATE TRIGGER blks_confirmed_trigger
+  AFTER UPDATE ON blks
+  FOR EACH ROW EXECUTE PROCEDURE blks_confirmed_update_txs();
+
 CREATE TABLE IF NOT EXISTS txs (
   code TEXT NOT NULL,
   tx_id TEXT NOT NULL,
+  -- The raw data of transactions isn't really useful aside for book keeping. Indexers can ignore this column and save some space.
   raw BYTEA DEFAULT NULL,
   blk_id TEXT DEFAULT NULL,
   blk_idx INT DEFAULT NULL,
@@ -71,110 +158,9 @@ CREATE TRIGGER txs_insert_trigger
 
 -- Get the tip (Note we don't returns blks directly, since it prevent function inlining)
 CREATE OR REPLACE FUNCTION get_tip(in_code TEXT)
-RETURNS TABLE(code TEXT, blk_id TEXT, height BIGINT) AS $$
-  SELECT code, blk_id, height FROM blks WHERE code=in_code AND confirmed IS TRUE ORDER BY height DESC LIMIT 1
+RETURNS TABLE(code TEXT, blk_id TEXT, height BIGINT, prev_id TEXT) AS $$
+  SELECT code, blk_id, height, prev_id FROM blks WHERE code=in_code AND confirmed IS TRUE ORDER BY height DESC LIMIT 1
 $$  LANGUAGE SQL STABLE;
-
--- Update outs.immature, txs.mempool and txs.replaced_by when a new block comes
-CREATE OR REPLACE PROCEDURE new_block_updated(in_code TEXT, coinbase_maturity BIGINT)
-AS $$
-DECLARE
-  maturity_height BIGINT;
-  r RECORD;
-BEGIN
-	maturity_height := (SELECT height - coinbase_maturity + 1 FROM get_tip(in_code));
-	-- Turn immature flag of outputs to mature
-	-- Note that we never set the outputs back to immature, even in reorg
-	-- But that's such a corner case that we don't care.
-	WITH q AS (
-	  SELECT o.code, o.tx_id, o.idx FROM outs o
-	  JOIN txs t USING (code, tx_id)
-	  JOIN blks b ON b.code=o.code AND b.blk_id=t.blk_id
-	  WHERE o.code=in_code AND o.immature IS TRUE AND b.height < maturity_height
-	)
-	UPDATE outs o SET immature='f' 
-	FROM q
-	WHERE o.code=q.code AND o.tx_id=q.tx_id AND o.idx=q.idx;
-
-	-- Turn mempool flag of confirmed txs to false
-	WITH q AS (
-	SELECT t.code, t.tx_id, b.blk_id, bt.blk_idx FROM txs t
-	JOIN blks_txs bt USING (code, tx_id)
-	JOIN blks b ON b.code=bt.code AND b.blk_id=bt.blk_id
-	-- Theorically, we shouldn't use t.mempool IS TRUE. But this call would slow everything down.
-	-- Here we depend on the indexer to do the right thing
-	WHERE t.code=in_code AND t.mempool IS TRUE AND b.confirmed IS TRUE)
-	UPDATE txs t SET mempool='f', replaced_by=NULL, blk_id=q.blk_id, blk_idx=q.blk_idx
-	FROM q
-	WHERE t.code=q.code AND t.tx_id=q.tx_id;
-
-	-- Turn mempool flag of txs with inputs spent by confirmed blocks to false
-	WITH q AS (
-	SELECT mempool_ins.code, mempool_ins.tx_id mempool_tx_id, confirmed_ins.tx_id confirmed_tx_id
-	FROM 
-	  (SELECT i.code, i.spent_tx_id, i.spent_idx, t.tx_id FROM ins i
-	  JOIN txs t ON t.code=i.code AND t.tx_id=i.input_tx_id
-	  WHERE i.code=in_code AND t.mempool IS TRUE) mempool_ins
-	LEFT JOIN (
-	  SELECT i.code, i.spent_tx_id, i.spent_idx, t.tx_id FROM ins i
-	  JOIN txs t ON t.code=i.code AND t.tx_id=i.input_tx_id
-	  WHERE i.code=in_code AND t.blk_id IS NOT NULL
-	) confirmed_ins USING (code, spent_tx_id, spent_idx)
-	WHERE confirmed_ins.tx_id IS NOT NULL) -- The use of LEFT JOIN is intentional, it forces postgres to use a specific index
-	UPDATE txs t SET mempool='f', replaced_by=q.confirmed_tx_id
-	FROM q
-	WHERE t.code=q.code AND t.tx_id=q.mempool_tx_id;
-
-
-
-	-- Turn spent_blk_id for outputs which has been spent
-	WITH q AS (
-	SELECT o.code, o.tx_id, o.idx, ti.blk_id FROM outs o
-	JOIN ins i ON i.code=o.code AND i.spent_tx_id=o.tx_id AND i.spent_idx=o.idx
-	JOIN txs ti ON i.code=ti.code AND i.input_tx_id=ti.tx_id
-	WHERE o.code=in_code AND o.spent_blk_id IS NULL AND ti.blk_id IS NOT NULL)
-	UPDATE outs o
-	SET spent_blk_id=q.blk_id
-	FROM q
-	WHERE q.code=o.code AND q.tx_id=o.tx_id AND q.idx=o.idx;
-END;
-$$ LANGUAGE plpgsql;
-
--- Orphan blocks at `in_height` or above.
--- This bring back orphaned transactions in mempool
-CREATE OR REPLACE PROCEDURE orphan_blocks(in_code TEXT, in_height BIGINT)
-AS $$
-DECLARE
-BEGIN
-	-- Set mempool flags of the txs in the blocks back to true
-	WITH q AS (
-	SELECT t.code, t.tx_id FROM txs t
-	JOIN blks_txs bt USING (code, tx_id)
-	JOIN blks b ON b.code=bt.code AND b.blk_id=bt.blk_id
-	WHERE t.code=in_code AND b.height >= in_height AND b.confirmed IS TRUE AND t.mempool IS FALSE)
-	UPDATE txs t
-	SET mempool='t', blk_id=NULL, blk_idx=NULL
-	FROM q
-	WHERE q.code=t.code AND q.tx_id=t.tx_id;
-
-	-- Set spent_blk_id of outs that where spent back to null
-	WITH q AS (
-	  SELECT o.code, o.tx_id, o.idx FROM outs o
-	  JOIN blks b ON o.code=b.code AND spent_blk_id=b.blk_id
-	  WHERE o.code=in_code AND b.height >= in_height AND confirmed IS TRUE
-	)
-	UPDATE outs o
-	SET spent_blk_id=NULL
-	FROM q
-	WHERE q.code=o.code AND q.tx_id=o.tx_id AND q.idx=o.idx;
-
-	-- Set confirmed flags of blks to false
-	UPDATE blks
-	SET confirmed='f'
-	WHERE code=in_code AND height >= in_height;
-END;
-$$ LANGUAGE plpgsql;
-
 
 CREATE TABLE IF NOT EXISTS blks_txs (
   code TEXT NOT NULL,
@@ -185,6 +171,27 @@ CREATE TABLE IF NOT EXISTS blks_txs (
   FOREIGN KEY(code, tx_id) REFERENCES txs ON DELETE CASCADE,
   FOREIGN KEY(code, blk_id) REFERENCES blks ON DELETE CASCADE);
 
+CREATE INDEX IF NOT EXISTS txs_by_blk_id ON blks_txs (code, blk_id);
+
+CREATE OR REPLACE FUNCTION blks_txs_denormalize() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE
+	r RECORD;
+BEGIN
+	IF 
+	  (SELECT confirmed FROM blks WHERE code=NEW.code AND blk_id=NEW.blk_id)
+	THEN
+	  -- Propagate values to txs
+	  UPDATE txs
+	  SET blk_id=NEW.blk_id, blk_idx=NEW.blk_idx, mempool='f', replaced_by=NULL
+	  WHERE code=NEW.code AND tx_id=NEW.tx_id;
+	END IF;
+	RETURN NEW;
+END
+$$;
+
+CREATE TRIGGER blks_txs_insert_trigger
+  AFTER INSERT ON blks_txs
+  FOR EACH ROW EXECUTE PROCEDURE blks_txs_denormalize();
 
 CREATE TABLE IF NOT EXISTS scripts (
   code TEXT NOT NULL,
@@ -572,6 +579,7 @@ WITH DATA;
 CREATE UNIQUE INDEX wallets_history_pk ON wallets_history (wallet_id, code, asset_id, tx_id);
 CREATE INDEX wallets_history_by_seen_at ON wallets_history (seen_at);
 
+-- Histogram depends on wallets_history, as such, you should make sure the materialized view is refreshed time for up-to-date histogram.
 CREATE OR REPLACE FUNCTION get_wallets_histogram(in_wallet_id TEXT, in_code TEXT, in_asset_id TEXT, in_from TIMESTAMPTZ, in_to TIMESTAMPTZ, in_interval INTERVAL)
 RETURNS TABLE(date TIMESTAMPTZ, balance_change BIGINT, balance BIGINT) AS $$
   SELECT s AS time,

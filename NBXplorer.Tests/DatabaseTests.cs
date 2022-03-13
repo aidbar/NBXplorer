@@ -38,8 +38,8 @@ namespace NBXplorer.Tests
 			conn.Execute(GetScript("generate-whale.sql"));
 			Logs.WriteLine("Data loaded");
 			await Benchmark(conn, "SELECT * FROM wallets_utxos;", 50);
-			await Benchmark(conn, "CALL new_block_updated('BTC', 100);", 50);
-			await Benchmark(conn, "CALL orphan_blocks('BTC', 1000000);", 200);
+			// Turn block unconf then back to conf
+			await Benchmark(conn, "UPDATE blks SET confirmed='f' WHERE code='BTC' AND blk_id='c94d3162fbdd6773c490e50afd813c9eae06644fdd158c89c03a34ba5f7aacea';UPDATE blks SET confirmed='t' WHERE code='BTC' AND blk_id='c94d3162fbdd6773c490e50afd813c9eae06644fdd158c89c03a34ba5f7aacea';", 50);
 			await Benchmark(conn,
 				"SELECT ts.script, ts.addr, ts.descriptor, ts.keypath FROM ( VALUES ('BTC', 'blah'), ('BTC', 'blah'), ('BTC', 'blah'), ('BTC', 'blah')) r (code, script), " +
 				" LATERAL(" +
@@ -98,8 +98,7 @@ namespace NBXplorer.Tests
 				"INSERT INTO outs VALUES ('BTC', @tx, 0, 'a1', @val);" +
 				"INSERT INTO blks VALUES ('BTC', @blk, @blkcount, 'f');" +
 				"INSERT INTO blks_txs (code, tx_id, blk_id) VALUES ('BTC', @tx, @blk);" +
-				"UPDATE blks SET confirmed='t' WHERE code='BTC' AND blk_id=@blk;" +
-				"CALL new_block_updated('BTC', 101);",
+				"UPDATE blks SET confirmed='t' WHERE code='BTC' AND blk_id=@blk;",
 				new
 				{
 					tx = "tx" + (txcount++),
@@ -153,8 +152,7 @@ namespace NBXplorer.Tests
 				await conn.ExecuteAsync(
 				"INSERT INTO blks VALUES ('BTC', @blk, @blkcount, 'f');" +
 				"INSERT INTO blks_txs (code, tx_id, blk_id) VALUES ('BTC', @tx, @blk);" +
-				"UPDATE blks SET confirmed='t' WHERE code='BTC' AND blk_id=@blk;" +
-				"CALL new_block_updated('BTC', 101);",
+				"UPDATE blks SET confirmed='t' WHERE code='BTC' AND blk_id=@blk;",
 				parameters);
 			}
 
@@ -281,19 +279,19 @@ namespace NBXplorer.Tests
 			await conn.ExecuteAsync(
 				"INSERT INTO blks VALUES ('BTC', 'b1', 0, 'b0');" +
 				"INSERT INTO blks_txs (code, tx_id, blk_id) VALUES ('BTC', 't1', 'b1');" +
-				"CALL new_block_updated('BTC', 0);");
+				"UPDATE blks SET confirmed='t' WHERE blk_id='b1';");
 
 			Assert.Equal("b1", conn.ExecuteScalar<string>("SELECT blk_id FROM txs WHERE tx_id='t1'"));
 
 			Assert.Single(await conn.QueryAsync("SELECT * FROM wallets_utxos WHERE wallet_id='Alice'"));
 
-			await conn.Orphan("b1");
+			await conn.ExecuteAsync("UPDATE blks SET confirmed='f' WHERE blk_id='b1';");
 
 			Assert.Null(conn.ExecuteScalar<string>("SELECT blk_id FROM txs WHERE tx_id='t1'"));
 			await conn.ExecuteAsync("UPDATE blks SET confirmed='t';" +
-									"CALL new_block_updated('BTC', 0);");
+									"UPDATE blks SET confirmed='t' WHERE blk_id='b1';");
 			Assert.Equal("b1", conn.ExecuteScalar<string>("SELECT blk_id FROM txs WHERE tx_id='t1'"));
-			await conn.Orphan("b1");
+			await conn.ExecuteAsync("UPDATE blks SET confirmed='f' WHERE blk_id='b1';");
 
 			var balance = conn.QuerySingle("SELECT * FROM wallets_balances WHERE wallet_id='Alice';");
 			Assert.Equal(0, balance.confirmed_balance);
@@ -301,7 +299,7 @@ namespace NBXplorer.Tests
 			await conn.ExecuteAsync(
 				"INSERT INTO blks VALUES ('BTC', 'b2', 0, 'b0');" +
 				"INSERT INTO blks_txs (code, tx_id, blk_id) VALUES ('BTC', 't1', 'b2');" +
-				"CALL new_block_updated('BTC', 0);");
+				"UPDATE blks SET confirmed='t' WHERE blk_id='b2';");
 
 			balance = conn.QuerySingle("SELECT * FROM wallets_balances WHERE wallet_id='Alice';");
 			Assert.Equal(5, balance.confirmed_balance);
@@ -329,11 +327,11 @@ namespace NBXplorer.Tests
 			await conn.ExecuteAsync(
 				"INSERT INTO blks VALUES ('BTC', 'b3', 1, 'b2');" +
 				"INSERT INTO blks_txs (code, tx_id, blk_id) VALUES ('BTC', 't2', 'b3');" +
-				"CALL new_block_updated('BTC', 0);");
+				"UPDATE blks SET confirmed='t' WHERE blk_id='b3';");
 
 			balance = conn.QuerySingleOrDefault("SELECT * FROM wallets_balances WHERE wallet_id='Alice';");
 			Assert.Null(balance);
-			await conn.Orphan("b3");
+			await conn.ExecuteAsync("UPDATE blks SET confirmed='f' WHERE blk_id='b3';");
 
 			balance = conn.QuerySingle("SELECT * FROM wallets_balances WHERE wallet_id='Alice';");
 			Assert.Equal(5, balance.confirmed_balance);
@@ -355,7 +353,7 @@ namespace NBXplorer.Tests
 				"INSERT INTO ins VALUES ('BTC', 't4', 0, 't1', 0);" +
 				"INSERT INTO blks (code, blk_id, height, prev_id) VALUES ('BTC', 'b1', 1, 'b0');" +
 				"INSERT INTO blks_txs (code, blk_id, tx_id) VALUES ('BTC', 'b1', 't4'), ('BTC', 'b1', 't1');" +
-				"CALL new_block_updated('BTC', 0);");
+				"UPDATE blks SET confirmed='t' WHERE blk_id='b1';");
 
 			var t3 = await conn.QueryFirstAsync("SELECT * FROM txs WHERE tx_id='t3'");
 			Assert.False(t3.mempool);
@@ -417,7 +415,7 @@ namespace NBXplorer.Tests
 				"('BTC', 't2', 2, 'alice2', 1);" +
 				"INSERT INTO blks VALUES ('BTC', 'b2', 2, 'b1');" +
 				"INSERT INTO blks_txs (code, blk_id, tx_id) VALUES ('BTC', 'b2', 't2');" +
-				"CALL new_block_updated('BTC', 0);");
+				"UPDATE blks SET confirmed='t' WHERE blk_id=ANY(ARRAY['b1','b2']);");
 
 			await AssertBalance(conn, "b2", "b1");
 
@@ -425,14 +423,14 @@ namespace NBXplorer.Tests
 			await conn.ExecuteAsync(
 				"INSERT INTO blks VALUES ('BTC', 'b1-2', 1, 'b0'), ('BTC', 'b2-2', 2, 'b1-2');" +
 				"INSERT INTO blks_txs (code, blk_id, tx_id) VALUES ('BTC', 'b1-2', 't1'), ('BTC', 'b2-2', 't2');" +
-				"CALL new_block_updated('BTC', 0);");
+				"UPDATE blks SET confirmed='t' WHERE blk_id=ANY(ARRAY['b1-2', 'b2-2']);");
 			await AssertBalance(conn, "b2-2", "b1-2");
 
 			// And again!
 			await conn.ExecuteAsync(
 				"INSERT INTO blks VALUES ('BTC', 'b1-3', 1, 'b0'), ('BTC', 'b2-3', 2, 'b1-3');" +
 				"INSERT INTO blks_txs (code, blk_id, tx_id) VALUES ('BTC', 'b1-3', 't1'), ('BTC', 'b2-3', 't2');" +
-				"CALL new_block_updated('BTC', 0);");
+				"UPDATE blks SET confirmed='t' WHERE blk_id=ANY(ARRAY['b1-3', 'b2-3']);");
 			await AssertBalance(conn, "b2-3", "b1-3");
 
 			// Let's test: If the outputs are double spent, then it should disappear from the wallet balance.
@@ -441,7 +439,7 @@ namespace NBXplorer.Tests
 				"INSERT INTO ins VALUES ('BTC', 'ds', 0, 't1', 1); " + // This one double spend t2
 				"INSERT INTO blks VALUES ('BTC', 'bs', 1, 'b0');" +
 				"INSERT INTO blks_txs (code, blk_id, tx_id) VALUES ('BTC', 'bs', 'ds');" +
-				"CALL new_block_updated('BTC', 0);");
+				"UPDATE blks SET confirmed='t' WHERE blk_id='bs';");
 
 			// Alice should have her t1 output spent by the confirmed bs, so she has nothing left
 			var balance = await conn.QueryFirstOrDefaultAsync("SELECT * FROM wallets_balances WHERE wallet_id='Alice';");
@@ -475,7 +473,7 @@ namespace NBXplorer.Tests
 			Assert.Equal(40 + 20 + 39, balance.confirmed_balance);
 			Assert.Equal(40 + 20 + 39, balance.available_balance);
 
-			await conn.Orphan(b2);
+			await conn.ExecuteAsync($"UPDATE blks SET confirmed='f' WHERE blk_id='{b2}';");
 
 			balance = await conn.QueryFirstOrDefaultAsync("SELECT * FROM wallets_balances WHERE wallet_id='Alice';");
 			Assert.Equal(1, balance.unconfirmed_balance);
@@ -489,7 +487,7 @@ namespace NBXplorer.Tests
 
 			Assert.Single(await conn.QueryAsync("SELECT * FROM wallets_utxos WHERE wallet_id='Alice' AND spent_mempool IS FALSE AND immature IS FALSE;"));
 
-			await conn.Orphan(b1);
+			await conn.ExecuteAsync($"UPDATE blks SET confirmed='f' WHERE blk_id='{b1}';");
 
 			balance = await conn.QueryFirstOrDefaultAsync("SELECT * FROM wallets_balances WHERE wallet_id='Alice';");
 			Assert.Equal(1, balance.unconfirmed_balance);
@@ -533,14 +531,6 @@ namespace NBXplorer.Tests
 				await service.StartAsync(default);
 			var facto = provider.GetRequiredService<DbConnectionFactory>();
 			return await facto.CreateConnection();
-		}
-	}
-	static class Helper
-	{
-		public static async Task Orphan(this DbConnection db, string block)
-		{
-			var height = await db.ExecuteScalarAsync<long>("SELECT height FROM blks WHERE blk_id=@block", new { block });
-			await db.ExecuteAsync("CALL orphan_blocks('BTC', @height);", new { height });
 		}
 	}
 }
