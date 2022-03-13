@@ -577,17 +577,18 @@ WITH DATA;
 CREATE UNIQUE INDEX wallets_history_pk ON wallets_history (wallet_id, code, asset_id, tx_id);
 CREATE INDEX wallets_history_by_seen_at ON wallets_history (seen_at);
 
-CREATE OR REPLACE FUNCTION get_wallets_histogram(in_from TIMESTAMPTZ, in_to TIMESTAMPTZ, in_interval INTERVAL)
-RETURNS TABLE(date TIMESTAMPTZ, wallet_id TEXT, code TEXT, asset_id TEXT, balance BIGINT) AS $$
-  SELECT s AS time, q.wallet_id, q.code, q.asset_id, q.change + COALESCE((SELECT balance_total FROM wallets_history WHERE in_from <= seen_at LIMIT 1), 0) AS balance
+CREATE OR REPLACE FUNCTION get_wallets_histogram(in_wallet_id TEXT, in_code TEXT, in_asset_id TEXT, in_from TIMESTAMPTZ, in_to TIMESTAMPTZ, in_interval INTERVAL)
+RETURNS TABLE(date TIMESTAMPTZ, balance_change BIGINT, balance BIGINT) AS $$
+  SELECT s AS time,
+  		change,
+  		SUM (q.change) OVER (ORDER BY s) + COALESCE((SELECT balance_total FROM wallets_history WHERE seen_at < in_from AND code=in_code AND asset_id=in_asset_id LIMIT 1), 0)  AS balance
   FROM generate_series(in_from,
 					   in_to - in_interval,
-					   in_interval) s,
-  LATERAL (
-	  SELECT wallet_id, code, asset_id, COALESCE(SUM(balance_change),0) change FROM wallets_history
-	  WHERE  s <= seen_at AND seen_at < s + in_interval
-	  GROUP BY wallet_id, code, asset_id
-  ) q
+					   in_interval) s
+  LEFT JOIN LATERAL (
+	  SELECT s, COALESCE(SUM(balance_change),0) change FROM wallets_history
+	  WHERE  s <= seen_at AND seen_at < s + in_interval AND wallet_id=in_wallet_id AND code=in_code AND asset_id=in_asset_id
+  ) q USING (s)
 $$  LANGUAGE SQL STABLE;
 
 CREATE OR REPLACE FUNCTION get_wallets_recent(in_wallet_id TEXT, in_limit INT, in_offset INT)

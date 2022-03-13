@@ -17,6 +17,7 @@ using NBXplorer.Configuration;
 using System.Runtime.CompilerServices;
 using System.IO;
 using System.Diagnostics;
+using System.Globalization;
 
 namespace NBXplorer.Tests
 {
@@ -49,8 +50,7 @@ namespace NBXplorer.Tests
 				"   WHERE ws.code=r.code AND ws.script=r.script) ts;", 50);
 			await Benchmark(conn, "SELECT o.tx_id, o.idx, o.value, o.script FROM (VALUES ('BTC', 'hash', 5), ('BTC', 'hash', 5), ('BTC', 'hash', 5))  r (code, tx_id, idx) JOIN outs o USING (code, tx_id, idx);", 50);
 			await Benchmark(conn, "SELECT height, tx_id, wu.idx, value, script, keypath, mempool, spent_mempool, seen_at  FROM wallets_utxos wu JOIN descriptors_scripts USING (code, script) WHERE code='BTC' AND wallet_id='WHALE' AND immature IS FALSE", 50);
-			await Benchmark(conn, "SELECT * FROM get_wallets_histogram('2022-01-01'::timestamptz, '2022-02-01'::timestamptz, interval '1 day') WHERE wallet_id='WHALE';", 50);
-			await Benchmark(conn, "SELECT * FROM get_wallets_recent('BTC', 10, 0);", 50);
+			await Benchmark(conn, "SELECT * FROM get_wallets_histogram('WHALE', 'BTC', '', '2022-01-01'::timestamptz, '2022-02-01'::timestamptz, interval '1 day');", 50);
 		}
 
 		private static string GetScript(string script)
@@ -78,6 +78,146 @@ namespace NBXplorer.Tests
 			Assert.True(ms < target, "Unacceptable response time for " + script);
 		}
 
+
+		[Fact]
+		public async Task CanCalculateHistogram()
+		{
+			await using var conn = await GetConnection();
+			int txcount = 0;
+			int blkcount = 0;
+			await conn.ExecuteAsync(
+				"INSERT INTO wallets VALUES ('Alice');" +
+				"INSERT INTO scripts VALUES ('BTC', 'a1', 'a1');" +
+				"INSERT INTO wallets_scripts (code, wallet_id, script) VALUES ('BTC', 'Alice', 'a1');"
+				);
+
+			async Task Receive(long value, DateTimeOffset date)
+			{
+				await conn.ExecuteAsync(
+				"INSERT INTO txs (code, tx_id, mempool, seen_at) VALUES ('BTC', @tx, 't', @seen_at);" +
+				"INSERT INTO outs VALUES ('BTC', @tx, 0, 'a1', @val);" +
+				"INSERT INTO blks VALUES ('BTC', @blk, @blkcount, 'f');" +
+				"INSERT INTO blks_txs (code, tx_id, blk_id) VALUES ('BTC', @tx, @blk);" +
+				"UPDATE blks SET confirmed='t' WHERE code='BTC' AND blk_id=@blk;" +
+				"CALL new_block_updated('BTC', 101);",
+				new
+				{
+					tx = "tx" + (txcount++),
+					blk = "b" + (blkcount++),
+					blkcount = blkcount - 1,
+					val = value,
+					seen_at = date
+				});
+			}
+
+			async Task Spend(long value, DateTimeOffset date)
+			{
+				var utxos = await conn.QueryAsync("SELECT * FROM wallets_utxos WHERE wallet_id='Alice';");
+				long total = 0;
+				List<(string tx_id, long idx)> spent = new List<(string tx_id, long idx)>();
+				foreach (var utxo in utxos)
+				{
+					while (total < value)
+					{
+						spent.Add((utxo.tx_id, utxo.idx));
+						total += utxo.value;
+					}
+				}
+				Assert.True(total > value, "Not enough money");
+
+				var parameters = new
+				{
+					tx = "tx" + (txcount++),
+					blk = "b" + (blkcount++),
+					blkcount = blkcount - 1,
+					change = total - value,
+					seen_at = date
+				};
+				await conn.ExecuteAsync("INSERT INTO txs (code, tx_id, mempool, seen_at) VALUES ('BTC', @tx, 't', @seen_at);", parameters);
+				if (parameters.change != 0)
+				{
+					await conn.ExecuteAsync("INSERT INTO outs VALUES ('BTC', @tx, 0, 'a1', @change);", parameters);
+				}
+				int i = 0;
+				foreach (var s in spent)
+				{
+					await conn.ExecuteAsync("INSERT INTO ins VALUES ('BTC', @tx, @idx, @spent_tx, @spent_idx);", new
+					{
+						tx = parameters.tx,
+						idx = i,
+						spent_tx = s.tx_id,
+						spent_idx = s.idx
+					});
+					i++;
+				}
+				await conn.ExecuteAsync(
+				"INSERT INTO blks VALUES ('BTC', @blk, @blkcount, 'f');" +
+				"INSERT INTO blks_txs (code, tx_id, blk_id) VALUES ('BTC', @tx, @blk);" +
+				"UPDATE blks SET confirmed='t' WHERE code='BTC' AND blk_id=@blk;" +
+				"CALL new_block_updated('BTC', 101);",
+				parameters);
+			}
+
+			var date = new DateTime(2022, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+			var from = date;
+			await Receive(50, date);
+			date += TimeSpan.FromMinutes(2);  // 2
+			await Spend(20, date);
+			date += TimeSpan.FromMinutes(10); // 12
+			await Spend(10, date);
+			date += TimeSpan.FromMinutes(1); // 13
+			await Receive(10, date);
+			date += TimeSpan.FromMinutes(8); // 21
+			await Receive(30, date);
+			date += TimeSpan.FromMinutes(20); // 41
+			await Spend(50, date);
+			date += TimeSpan.FromMinutes(10); // 51
+			await Receive(2, date);
+			date += TimeSpan.FromMinutes(2); // 53
+			await Spend(1, date);
+			await conn.ExecuteAsync("REFRESH MATERIALIZED VIEW wallets_history;");
+
+			var r1 = await conn.QueryAsync("SELECT * FROM get_wallets_histogram('Alice', 'BTC', '', @from, @to, interval '5 minutes')", new
+			{
+				from = from,
+				to = from + TimeSpan.FromHours(1.0)
+			});
+
+			var expected = new (long, long)[]
+			{
+				(30,30),
+				(0,30),
+				(0,30),
+				(0,30),
+				(30,60),
+				(0,60),
+				(0,60),
+				(0,60),
+				(-50,10),
+				(0,10),
+				(1,11),
+				(0,11)
+			};
+			foreach (var pair in Enumerable.Zip(r1.Select(o => ((long)o.balance_change, (long)o.balance)),
+						expected))
+			{
+				Assert.Equal(pair.First, pair.Second);
+			}
+
+			r1 = await conn.QueryAsync("SELECT * FROM get_wallets_histogram('Alice', 'BTC', '', @from, @to, interval '5 minutes')", new
+			{
+				from = from + TimeSpan.FromMinutes(30.0),
+				to = from + TimeSpan.FromHours(1.0)
+			});
+
+			expected = expected.Skip(6).ToArray();
+			foreach (var pair in Enumerable.Zip(r1.Select(o => ((long)o.balance_change, (long)o.balance)),
+						expected))
+			{
+				Assert.Equal(pair.First, pair.Second);
+			}
+		}
+
 		[Fact]
 		public async Task CanDetectDoubleSpending()
 		{
@@ -88,8 +228,8 @@ namespace NBXplorer.Tests
 			// t2 should be marked replaced_by
 			await conn.ExecuteAsync(
 				"INSERT INTO txs (code, tx_id, mempool) VALUES ('BTC', 't0', 't'), ('BTC', 't1', 't'),  ('BTC', 't2', 't'), ('BTC', 't3', 't'), ('BTC', 't4', 't'), ('BTC', 't5', 't');" +
-				"INSERT INTO scripts VALUES ('BTC', 'a1', '');" + 
-				"INSERT INTO outs VALUES ('BTC', 't0', 10, 'a1', 5);" + 
+				"INSERT INTO scripts VALUES ('BTC', 'a1', '');" +
+				"INSERT INTO outs VALUES ('BTC', 't0', 10, 'a1', 5);" +
 				"INSERT INTO ins VALUES ('BTC', 't1', 0, 't0', 10);" +
 				"INSERT INTO ins VALUES ('BTC', 't2', 0, 't0', 10);"
 				);
