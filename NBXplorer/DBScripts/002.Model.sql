@@ -129,10 +129,10 @@ BEGIN
 	WHERE io.code=NEW.code AND io.tx_id=NEW.tx_id;
 
 	-- Propagate any replaced_by / mempool to ins/outs/ins_outs and to the children
-	IF NEW.replaced_by != OLD.replaced_by THEN
+	IF NEW.replaced_by IS DISTINCT FROM OLD.replaced_by THEN
 	  FOR r IN 
 	  	SELECT code, input_tx_id, replaced_by FROM ins
-		WHERE code=NEW.code AND spent_tx_id=NEW.tx_id AND replaced_by != NEW.replaced_by
+		WHERE code=NEW.code AND spent_tx_id=NEW.tx_id AND replaced_by IS DISTINCT FROM NEW.replaced_by
 	  LOOP
 		UPDATE txs SET replaced_by=NEW.replaced_by
 		WHERE code=r.code AND tx_id=r.input_tx_id;
@@ -624,3 +624,46 @@ RETURNS TABLE(wallet_id TEXT, code TEXT, asset_id TEXT, tx_id TEXT, seen_at TIME
 		) q
 	OFFSET in_offset
 $$ LANGUAGE SQL STABLE;
+
+CREATE TYPE new_out AS (
+  tx_id TEXT,
+  idx BIGINT,
+  script TEXT,
+  "value" BIGINT,
+  asset_id TEXT
+);
+CREATE TYPE new_in AS (
+  tx_id TEXT,
+  idx BIGINT,
+  spent_tx_id TEXT,
+  spent_idx BIGINT
+);
+
+CREATE OR REPLACE PROCEDURE new_txs(in_code TEXT, in_outs new_out[], in_ins new_in[]) LANGUAGE plpgsql AS $$
+BEGIN
+  CALL new_txs(in_code, in_outs, in_ins, CURRENT_TIMESTAMP);
+END $$;
+
+CREATE OR REPLACE PROCEDURE new_txs(in_code TEXT, in_outs new_out[], in_ins new_in[], in_seen_at TIMESTAMPTZ) LANGUAGE plpgsql AS $$
+DECLARE
+  r RECORD;
+BEGIN
+  FOR r IN
+	SELECT o.* FROM scripts s
+	JOIN unnest(in_outs) o USING (script)
+	WHERE s.code=in_code
+  LOOP
+	INSERT INTO txs (code, tx_id) VALUES (in_code, r.tx_id) ON CONFLICT (code, tx_id) DO UPDATE SET seen_at=LEAST(in_seen_at, txs.seen_at);
+	INSERT INTO outs (code, tx_id, idx, script, value, asset_id) VALUES (in_code, r.tx_id, r.idx, r.script, r.value, r.asset_id) ON CONFLICT DO NOTHING;
+  END LOOP;
+
+  -- We need to preserve order of insertion of the inputs since it is important for double spend detection
+  FOR r IN
+	SELECT i.* FROM  unnest(in_ins) WITH ORDINALITY AS i(tx_id, idx, spent_tx_id, spent_idx, "order"),
+	LATERAL (SELECT * FROM outs o WHERE o.code=in_code AND o.tx_id=i.spent_tx_id AND o.idx=i.spent_idx) o
+	ORDER BY "order"
+  LOOP
+	INSERT INTO txs (code, tx_id) VALUES (in_code, r.tx_id) ON CONFLICT (code, tx_id) DO UPDATE SET seen_at=LEAST(in_seen_at, txs.seen_at);
+	INSERT INTO ins (code, input_tx_id, input_idx, spent_tx_id, spent_idx) VALUES (in_code, r.tx_id, r.idx, r.spent_tx_id, r.spent_idx) ON CONFLICT DO NOTHING;
+  END LOOP;
+END $$;

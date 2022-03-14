@@ -50,6 +50,38 @@ namespace NBXplorer
 			return await Connection.ExecuteAsync("INSERT INTO wallets VALUES (@id) ON CONFLICT DO NOTHING", new { id = walletId }) == 1;
 		}
 
+		public record NewOut(uint256 txId, int idx, Script script, Money value, string? assetId = null);
+		public record NewIn(uint256 txId, int idx, uint256 spentTxId, int spentIdx);
+
+		public async Task NewTxs(NewOut[]? newOuts, NewIn[]? newIns, DateTimeOffset seenAt)
+		{
+			newOuts ??= Array.Empty<NewOut>();
+			newIns ??= Array.Empty<NewIn>();
+			int i = 0;
+			StringBuilder tx_outs = new StringBuilder();
+			tx_outs.Append("ARRAY[");
+			foreach (var o in newOuts)
+			{
+				if (i != 0)
+					tx_outs.Append(',');
+				var asset_id = o.assetId is null ? "''" : o.assetId;
+				tx_outs.Append($"('{o.txId}', {o.idx}, {o.script.ToHex()}, {o.value.Satoshi}, {asset_id})");
+			}
+			tx_outs.Append("]::new_out[]");
+			i = 0;
+			StringBuilder tx_ins = new StringBuilder();
+			tx_ins.Append("ARRAY[");
+			foreach (var ni in newIns)
+			{
+				if (i != 0)
+					tx_ins.Append(',');
+				tx_ins.Append($"('{ni.txId}', {ni.idx}, '{ni.spentTxId}', {ni.spentIdx})");
+				i++;
+			}
+			tx_ins.Append("]::new_in[]");
+			await Connection.ExecuteAsync($"CALL new_txs(@code, {tx_outs}, {tx_ins}, @seen_at)", new { code = Network.CryptoCode, seen_at = seenAt.UtcDateTime });
+		}
+
 		public async Task InsertIns(IEnumerable<(uint256 inputTxId, int inputIdx, OutPoint spentOutpoint)> ins)
 		{
 			var dbCommand = Connection.CreateCommand();

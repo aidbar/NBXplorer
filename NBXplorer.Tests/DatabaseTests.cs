@@ -132,24 +132,33 @@ namespace NBXplorer.Tests
 					change = total - value,
 					seen_at = date
 				};
+
+				// new_txs should take care of inserting the txs automatically. But we want to be in control of the seen_at.
 				await conn.ExecuteAsync("INSERT INTO txs (code, tx_id, mempool, seen_at) VALUES ('BTC', @tx, 't', @seen_at);", parameters);
+
+				int i = 0;
+				StringBuilder tx_outs = new StringBuilder();
+				tx_outs.Append("ARRAY[");
 				if (parameters.change != 0)
 				{
-					await conn.ExecuteAsync("INSERT INTO outs VALUES ('BTC', @tx, 0, 'a1', @change);", parameters);
+					if (i != 0)
+						tx_outs.Append(',');
+					tx_outs.Append($"('{parameters.tx}', 0, 'a1', {parameters.change}, '')");
 				}
-				int i = 0;
+				tx_outs.Append("]::new_out[]");
+				i = 0;
+				StringBuilder tx_ins = new StringBuilder();
+				tx_ins.Append("ARRAY[");
 				foreach (var s in spent)
 				{
-					await conn.ExecuteAsync("INSERT INTO ins VALUES ('BTC', @tx, @idx, @spent_tx, @spent_idx);", new
-					{
-						tx = parameters.tx,
-						idx = i,
-						spent_tx = s.tx_id,
-						spent_idx = s.idx
-					});
+					if (i != 0)
+						tx_ins.Append(',');
+					tx_ins.Append($"('{parameters.tx}', {i}, '{s.tx_id}', {s.idx})");
 					i++;
 				}
+				tx_ins.Append("]::new_in[]");
 				await conn.ExecuteAsync(
+				$"CALL new_txs('BTC', {tx_outs}, {tx_ins});" +
 				"INSERT INTO blks VALUES ('BTC', @blk, @blkcount, 'f');" +
 				"INSERT INTO blks_txs (code, tx_id, blk_id) VALUES ('BTC', @tx, @blk);" +
 				"UPDATE blks SET confirmed='t' WHERE code='BTC' AND blk_id=@blk;",
@@ -199,7 +208,7 @@ namespace NBXplorer.Tests
 			foreach (var pair in Enumerable.Zip(r1.Select(o => ((long)o.balance_change, (long)o.balance)),
 						expected))
 			{
-				Assert.Equal(pair.First, pair.Second);
+				Assert.Equal(pair.Second, pair.First);
 			}
 
 			r1 = await conn.QueryAsync("SELECT * FROM get_wallets_histogram('Alice', 'BTC', '', @from, @to, interval '5 minutes')", new
@@ -212,7 +221,7 @@ namespace NBXplorer.Tests
 			foreach (var pair in Enumerable.Zip(r1.Select(o => ((long)o.balance_change, (long)o.balance)),
 						expected))
 			{
-				Assert.Equal(pair.First, pair.Second);
+				Assert.Equal(pair.Second, pair.First);
 			}
 		}
 
@@ -272,8 +281,7 @@ namespace NBXplorer.Tests
 				"INSERT INTO wallets VALUES ('Alice');" +
 				"INSERT INTO scripts VALUES ('BTC', 'a1', '');" +
 				"INSERT INTO wallets_scripts VALUES ('BTC', 'a1', 'Alice');" +
-				"INSERT INTO txs (code, tx_id, mempool) VALUES ('BTC', 't1', 't');" +
-				"INSERT INTO outs VALUES('BTC', 't1', 10, 'a1', 5); ");
+				"CALL new_txs('BTC', ARRAY[('t1', 10, 'a1', 5, '')]::new_out[], ARRAY[]::new_in[]);");
 			Assert.Single(await conn.QueryAsync("SELECT * FROM wallets_utxos WHERE wallet_id='Alice'"));
 
 			await conn.ExecuteAsync(
@@ -306,8 +314,7 @@ namespace NBXplorer.Tests
 			Assert.Equal(5, balance.available_balance);
 
 			await conn.ExecuteAsync(
-				"INSERT INTO txs (code, tx_id, mempool) VALUES ('BTC', 't2', 't');" +
-				"INSERT INTO ins VALUES ('BTC', 't2', 0, 't1', 10);");
+				"CALL new_txs('BTC', ARRAY[]::new_out[], ARRAY[('t2', 0, 't1', 10)]::new_in[]);");
 
 			balance = conn.QuerySingle("SELECT * FROM wallets_balances WHERE wallet_id='Alice';");
 			Assert.Equal(5, balance.confirmed_balance);
@@ -345,12 +352,17 @@ namespace NBXplorer.Tests
 			// t1 get spent by t2 then t2 by t3. But then, t4 double spend t2 and get validated.
 			// So t2 and t3 should get out of mempool.
 			await conn.ExecuteAsync(
-				"INSERT INTO txs (code, tx_id, mempool) VALUES ('BTC', 't1', 't'), ('BTC', 't2', 't'), ('BTC', 't3', 't'), ('BTC', 't4', 't');" +
 				"INSERT INTO scripts VALUES ('BTC', 'script', '');" +
-				"INSERT INTO outs (code, tx_id, idx, script, value) VALUES ('BTC', 't1', 0, 'script', 5), ('BTC', 't2', 0, 'script', 5);" +
-				"INSERT INTO ins VALUES ('BTC', 't2', 0, 't1', 0);" +
-				"INSERT INTO ins VALUES ('BTC', 't3', 0, 't2', 0);" +
-				"INSERT INTO ins VALUES ('BTC', 't4', 0, 't1', 0);" +
+				"CALL new_txs('BTC'," +
+				"ARRAY[" +
+				"('t1', 0, 'script', 5, '')," +
+				"('t2', 0, 'script', 5, '')" +
+				"]::new_out[]," +
+				"ARRAY[" +
+				"('t2', 0, 't1', 0)," +
+				"('t3', 0, 't2', 0)," +
+				"('t4', 0, 't1', 0)" +
+				"]::new_in[]);" +
 				"INSERT INTO blks (code, blk_id, height, prev_id) VALUES ('BTC', 'b1', 1, 'b0');" +
 				"INSERT INTO blks_txs (code, blk_id, tx_id) VALUES ('BTC', 'b1', 't4'), ('BTC', 'b1', 't1');" +
 				"UPDATE blks SET confirmed='t' WHERE blk_id='b1';");
@@ -398,21 +410,23 @@ namespace NBXplorer.Tests
 
 			// 1 coin to alice, 1 to bob
 			await conn.ExecuteAsync(
-				"INSERT INTO txs (code, tx_id) VALUES ('BTC', 't1'); " +
-				"INSERT INTO outs (code, tx_id, idx, script, value) VALUES " +
-				"('BTC', 't1', 1, 'alice1', 50), " +
-				"('BTC', 't1', 2, 'bob1', 40);" +
+				"CALL new_txs('BTC', ARRAY[" +
+				"('t1', 1, 'alice1', 50, '')," +
+				"('t1', 2, 'bob1', 40, '')" +
+				"]::new_out[], ARRAY[]::new_in[]);" +
 				"INSERT INTO blks VALUES ('BTC', 'b1', 1, 'b0');" +
 				"INSERT INTO blks_txs (code, blk_id, tx_id) VALUES ('BTC', 'b1', 't1');");
 
 			// alice spend her coin, get change back, 2 outputs to bob
 			await conn.ExecuteAsync(
-				"INSERT INTO txs (code, tx_id) VALUES ('BTC', 't2'); " +
-				"INSERT INTO ins VALUES ('BTC', 't2', 0, 't1', 1);" +
-				"INSERT INTO outs (code, tx_id, idx, script, value) VALUES " +
-				"('BTC', 't2', 0, 'bob2', 20), " +
-				"('BTC', 't2', 1, 'bob3', 39)," +
-				"('BTC', 't2', 2, 'alice2', 1);" +
+				"CALL new_txs('BTC', ARRAY[" +
+				"('t2', 0, 'bob2', 20, '')," +
+				"('t2', 1, 'bob3', 39, '')," +
+				"('t2', 2, 'alice2', 1, '')" +
+				"]::new_out[], " +
+				"ARRAY[" +
+				"('t2', 0, 't1', 1)" +
+				"]::new_in[]);" +
 				"INSERT INTO blks VALUES ('BTC', 'b2', 2, 'b1');" +
 				"INSERT INTO blks_txs (code, blk_id, tx_id) VALUES ('BTC', 'b2', 't2');" +
 				"UPDATE blks SET confirmed='t' WHERE blk_id=ANY(ARRAY['b1','b2']);");
@@ -435,8 +449,7 @@ namespace NBXplorer.Tests
 
 			// Let's test: If the outputs are double spent, then it should disappear from the wallet balance.
 			await conn.ExecuteAsync(
-				"INSERT INTO txs (code, tx_id) VALUES ('BTC', 'ds'); " +
-				"INSERT INTO ins VALUES ('BTC', 'ds', 0, 't1', 1); " + // This one double spend t2
+				"CALL new_txs('BTC', ARRAY[]::new_out[], ARRAY[('ds', 0, 't1', 1)]::new_in[]);" + // This one double spend t2
 				"INSERT INTO blks VALUES ('BTC', 'bs', 1, 'b0');" +
 				"INSERT INTO blks_txs (code, blk_id, tx_id) VALUES ('BTC', 'bs', 'ds');" +
 				"UPDATE blks SET confirmed='t' WHERE blk_id='bs';");
