@@ -274,6 +274,45 @@ namespace NBXplorer.Tests
 		}
 
 		[Fact]
+		public async Task CanTrackGap()
+		{
+			await using var conn = await GetConnection();
+			await conn.ExecuteAsync(
+				"INSERT INTO descriptors VALUES ('BTC', 'd1');" +
+				"INSERT INTO scripts VALUES ('BTC', 's1', '');" +
+				"INSERT INTO scripts VALUES ('BTC', 's-used', '', 't');");
+
+			async Task AssertGap(int expectedNextIndex, int expectedGap)
+			{
+				var actual = await conn.QueryFirstAsync<(long next, long gap)>("SELECT next_idx, gap FROM descriptors WHERE descriptor='d1'");
+				Assert.Equal(expectedNextIndex, actual.next);
+				Assert.Equal(expectedGap, actual.gap);
+			}
+			await AssertGap(0, 0);
+			await conn.ExecuteAsync("INSERT INTO descriptors_scripts VALUES ('BTC', 'd1', 0, 's1', '');");
+			await AssertGap(1, 1);
+			await conn.ExecuteAsync("INSERT INTO descriptors_scripts VALUES ('BTC', 'd1', 1, 's1', '');");
+			await AssertGap(2, 2);
+			// 2 is used
+			await conn.ExecuteAsync("INSERT INTO descriptors_scripts VALUES ('BTC', 'd1', 2, 's-used', '');");
+			await AssertGap(3, 0);
+			await conn.ExecuteAsync("INSERT INTO descriptors_scripts VALUES ('BTC', 'd1', 3, 's1', '');");
+			await AssertGap(4, 1);
+			// 4 is used
+			await conn.ExecuteAsync("INSERT INTO descriptors_scripts VALUES ('BTC', 'd1', 4, 's-used', '');");
+			await AssertGap(5, 0);
+			// 4 get unused
+			await conn.ExecuteAsync("UPDATE descriptors_scripts SET used='f' WHERE idx=4;");
+			await AssertGap(5, 2);
+			// 2 get unused
+			await conn.ExecuteAsync("UPDATE descriptors_scripts SET used='f' WHERE idx=2;");
+			await AssertGap(5, 5);
+			// If s1 get used, it should propageate and the gap limit should be 1 since 4 isn't s1.
+			await conn.ExecuteAsync("UPDATE scripts SET used='t' WHERE script='s1';");
+			await AssertGap(5, 1);
+		}
+
+		[Fact]
 		public async Task CanCalculateUTXO()
 		{
 			await using var conn = await GetConnection();

@@ -154,15 +154,12 @@ namespace NBXplorer
 		public async Task<int> GenerateAddresses(string walletId, Descriptor descriptor, GenerateAddressQuery? query)
 		{
 			query = query ?? new GenerateAddressQuery();
-			var used = await Connection.QueryAsync<bool>(
-				"SELECT ds.used FROM descriptors_scripts ds " +
-				"WHERE ds.code=@code AND ds.descriptor=@descriptor " +
-				"ORDER BY ds.idx DESC " +
-				"LIMIT @limit", new { code = Network.CryptoCode, descriptor = descriptor.ToString(), limit = MinPoolSize });
-			var unused = used.TakeWhile(u => !u).Count();
-			if (unused >= MinPoolSize)
+			var gap = await Connection.ExecuteScalarAsync<int>(
+				"SELECT gap FROM descriptors " +
+				"WHERE code=@code AND descriptor=@descriptor", new { code = Network.CryptoCode, descriptor = descriptor.ToString() });
+			if (gap >= MinPoolSize)
 				return 0;
-			var toGenerate = Math.Max(0, MaxPoolSize - unused);
+			var toGenerate = Math.Max(0, MaxPoolSize - gap);
 			if (query.MaxAddresses is int max)
 				toGenerate = Math.Min(max, toGenerate);
 			if (query.MinAddresses is int min)

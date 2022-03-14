@@ -488,6 +488,28 @@ BEGIN
   RETURN NEW;
 END $$;
 
+CREATE OR REPLACE FUNCTION descriptors_scripts_before_insert_or_update_trigger_proc() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE
+  last_idx BIGINT;
+BEGIN
+  IF NEW.used THEN
+	--  [1] [2] [3] [4] [5] then next_idx=6, imagine that 3 is now used, we want to update gap to be 2 (because we still have 2 addresses ahead)
+	UPDATE descriptors d
+	-- If a new address has been used, then the gap can't go down by definition
+	SET gap = next_idx - NEW.idx - 1 -- 6 - 3 - 1 = 2
+	WHERE code=NEW.code AND descriptor=NEW.descriptor AND NEW.idx >= next_idx - gap; -- If the gap was 2, then only idx 4 or 5 could have changed anything (index >= 6 - 2)
+  ELSE -- If not used anymore
+	last_idx := (SELECT MAX(ds.idx) FROM descriptors_scripts ds WHERE ds.code=NEW.code AND ds.descriptor=NEW.descriptor AND ds.used IS TRUE AND ds.idx != NEW.idx);
+	UPDATE descriptors d
+	-- Say 1 and 3 was used. Then the newest latest used address will be 1 (last_idx) and gap should be 4 (gap = 6 - 1 - 1)
+	SET gap = COALESCE(next_idx - last_idx - 1, next_idx)
+	-- If the index was less than 1, then it couldn't have changed the gap... except if there is no last_idx
+	WHERE code=NEW.code AND descriptor=NEW.descriptor  AND (last_idx IS NULL OR NEW.idx > last_idx); 
+  END IF;
+  RETURN NEW;
+END $$;
+
+
 CREATE TRIGGER descriptors_scripts_before_insert_trigger
   BEFORE INSERT ON descriptors_scripts
   FOR EACH ROW EXECUTE PROCEDURE descriptors_scripts_before_insert_trigger_proc();
@@ -497,6 +519,9 @@ CREATE TRIGGER descriptors_scripts_after_insert_trigger
   REFERENCING NEW TABLE AS new_descriptors_scripts
   FOR EACH STATEMENT EXECUTE PROCEDURE descriptors_scripts_after_insert_trigger_proc();
 
+CREATE TRIGGER descriptors_scripts_before_insert_or_update_trigger
+  AFTER INSERT OR UPDATE ON descriptors_scripts
+  FOR EACH ROW EXECUTE PROCEDURE descriptors_scripts_before_insert_or_update_trigger_proc();
 
 CREATE TABLE IF NOT EXISTS wallets (
   wallet_id TEXT NOT NULL PRIMARY KEY,
