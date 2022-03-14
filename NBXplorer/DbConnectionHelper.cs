@@ -171,7 +171,7 @@ namespace NBXplorer
 			if (toGenerate == 0)
 				return 0;
 			retry:
-			var row = await Connection.ExecuteScalarAsync<int?>("SELECT next_index FROM descriptors WHERE code=@code AND descriptor=@descriptor", new { code = Network.CryptoCode, descriptor = descriptor.ToString() });
+			var row = await Connection.ExecuteScalarAsync<int?>("SELECT next_idx FROM descriptors WHERE code=@code AND descriptor=@descriptor", new { code = Network.CryptoCode, descriptor = descriptor.ToString() });
 			if (row is null && descriptor is LegacyDescriptor legacy)
 			{
 				var wid = new DerivationSchemeTrackedSource(legacy.DerivationStrategy).GetLegacyWalletId(Network);
@@ -205,7 +205,6 @@ namespace NBXplorer
 				"INSERT INTO scripts VALUES (@code, @script, @addr) ON CONFLICT DO NOTHING;" +
 				"INSERT INTO descriptors_scripts VALUES (@code, @descriptor, @idx, @script, @keypath) ON CONFLICT DO NOTHING;" +
 				"INSERT INTO wallets_scripts VALUES(@code, @script, @walletid, @descriptor, @idx) ON CONFLICT DO NOTHING;", linesScriptpubkeys);
-			await Connection.ExecuteAsync("UPDATE descriptors SET next_index=@next_index WHERE code=@code AND descriptor=@descriptor AND next_index < @next_index;", new { code = Network.CryptoCode, descriptor = descStr, next_index = nextIndex + toGenerate });
 			return toGenerate;
 		}
 

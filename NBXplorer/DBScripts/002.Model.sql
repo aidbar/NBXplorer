@@ -439,7 +439,8 @@ CREATE TRIGGER ins_delete_trigger
 CREATE TABLE IF NOT EXISTS descriptors (
   code TEXT NOT NULL,
   descriptor TEXT NOT NULL,
-  next_index BIGINT DEFAULT 0,
+  next_idx BIGINT DEFAULT 0,
+  gap BIGINT DEFAULT 0,
   PRIMARY KEY (code, descriptor)
 );
 
@@ -455,8 +456,27 @@ CREATE TABLE IF NOT EXISTS descriptors_scripts (
 ALTER TABLE descriptors_scripts DROP CONSTRAINT IF EXISTS descriptors_scripts_pkey CASCADE;
 CREATE UNIQUE INDEX IF NOT EXISTS descriptors_scripts_pkey ON descriptors_scripts (code, descriptor, idx) INCLUDE (script);
 ALTER TABLE descriptors_scripts ADD CONSTRAINT descriptors_scripts_pkey PRIMARY KEY USING INDEX descriptors_scripts_pkey;
-
 CREATE INDEX IF NOT EXISTS descriptors_scripts_code_script ON descriptors_scripts (code, script);
+
+CREATE OR REPLACE FUNCTION descriptors_scripts_update_descriptor() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE
+  r RECORD;
+BEGIN
+  FOR r IN
+	SELECT code, descriptor, MAX(idx) idx FROM new_descriptors_scripts
+	GROUP BY code, descriptor
+  LOOP
+	UPDATE descriptors s SET next_idx = r.idx + 1, gap = s.gap + (r.idx + 1 - next_idx)
+	WHERE code=NEW.code AND descriptor=r.descriptor AND r.idx >= next_idx;
+  END LOOP;
+  RETURN NULL;
+END $$;
+
+CREATE TRIGGER descriptors_scripts_insert_trigger
+  AFTER INSERT ON descriptors_scripts
+  REFERENCING NEW TABLE AS new_descriptors_scripts
+  FOR EACH STATEMENT EXECUTE PROCEDURE descriptors_scripts_update_descriptor();
+
 
 CREATE TABLE IF NOT EXISTS wallets (
   wallet_id TEXT NOT NULL PRIMARY KEY,

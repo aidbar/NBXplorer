@@ -725,7 +725,7 @@ namespace NBXplorer
 					next_index = p.HighestKeyIndexFound + 1
 				})
 				.ToArray();
-			await conn.Connection.ExecuteAsync("UPDATE descriptors SET next_index=@next_index WHERE code=@code AND descriptor=@descriptor", parameters);
+			await conn.Connection.ExecuteAsync("UPDATE descriptors SET next_idx=@next_index WHERE code=@code AND descriptor=@descriptor", parameters);
 			await conn.Connection.ExecuteAsync(
 				"WITH cte AS (SELECT code, script FROM descriptors_scripts WHERE code=@code AND descriptor=@descriptor AND idx < @next_index) " +
 				"UPDATE scripts s SET used='t' FROM cte WHERE s.code=cte.code AND s.script=cte.script", parameters);
