@@ -279,7 +279,7 @@ namespace NBXplorer.Tests
 			{
 				var script = strat.GetDerivation(keyPath).ScriptPubKey.ToHex();
 				using var conn = l.ConnectionFactory.CreateConnection().GetAwaiter().GetResult();
-				conn.Execute("UPDATE scripts SET used='t' WHERE script=@script", new { script });
+				conn.Execute("UPDATE descriptors_scripts SET used='t' WHERE code=@code AND script=@script", new { code = repository.Network.CryptoCode, script });
 			}
 			else
 			{
@@ -2259,6 +2259,7 @@ namespace NBXplorer.Tests
 					utxo = tester.Client.GetUTXOs(pubkey);
 					Assert.Empty(utxo.Unconfirmed.UTXOs);
 				}
+				// The postgres implementation is smarter. It detect the unconfirmed and the fact that the first address is used.
 				if (backend == Backend.Postgres)
 				{
 					Logs.Tester.LogInformation("Let's make sure hd pubkey 0/0 is also tracked, even if we tracked it later");

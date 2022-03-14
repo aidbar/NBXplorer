@@ -155,8 +155,7 @@ namespace NBXplorer
 		{
 			query = query ?? new GenerateAddressQuery();
 			var used = await Connection.QueryAsync<bool>(
-				"SELECT s.used FROM descriptors_scripts ds " +
-				"INNER JOIN scripts s USING (code, script) " +
+				"SELECT ds.used FROM descriptors_scripts ds " +
 				"WHERE ds.code=@code AND ds.descriptor=@descriptor " +
 				"ORDER BY ds.idx DESC " +
 				"LIMIT @limit", new { code = Network.CryptoCode, descriptor = descriptor.ToString(), limit = MinPoolSize });
@@ -244,13 +243,13 @@ namespace NBXplorer
 			var unused = await Connection.QueryFirstOrDefaultAsync<UnusedScriptRow>(
 				"SELECT s.script, s.addr, ds.keypath FROM descriptors_scripts ds " +
 				"INNER JOIN scripts s USING (code, script) " +
-				"WHERE ds.code=@code AND ds.descriptor=@descriptor AND s.used='f' " +
+				"WHERE ds.code=@code AND ds.descriptor=@descriptor AND ds.used='f' " +
 				"LIMIT 1 OFFSET @skip", new { code = Network.CryptoCode, descriptor = descriptor.ToString(), skip });
 			if (unused is null)
 				return null;
 			if (reserve)
 			{
-				var updated = await Connection.ExecuteAsync("UPDATE scripts SET used='t' WHERE code=@code AND script=@script AND used='f'", new { code = Network.CryptoCode, unused.script });
+				var updated = await Connection.ExecuteAsync("UPDATE descriptors_scripts SET used='t' WHERE code=@code AND script=@script AND descriptor=@descriptor AND used='f'", new { code = Network.CryptoCode, unused.script, descriptor = descriptor.ToString() });
 				if (updated == 0)
 					goto retry;
 			}

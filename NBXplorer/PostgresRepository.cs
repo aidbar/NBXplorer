@@ -130,8 +130,7 @@ namespace NBXplorer
 				})
 				.ToList();
 			await conn.Connection.ExecuteAsync(
-				"WITH cte AS (SELECT code, script FROM descriptors_scripts WHERE code=@code AND descriptor=@descriptor AND idx=@idx) " +
-				"UPDATE scripts s SET used='f' FROM cte WHERE s.code=cte.code AND s.script=cte.script", parameters);
+				"UPDATE descriptors_scripts SET used='f' WHERE code=@code AND descriptor=@descriptor AND idx=@idx", parameters);
 		}
 
 		public TrackedTransaction CreateTrackedTransaction(TrackedSource trackedSource, TrackedTransactionKey transactionKey, IEnumerable<Coin> coins, Dictionary<Script, KeyPath> knownScriptMapping)
@@ -520,8 +519,8 @@ namespace NBXplorer
 				})
 				.ToArray();
 			await connection.Connection.ExecuteAsync(
-				"INSERT INTO scripts VALUES (@code, @script, @address, 't') ON CONFLICT (code, script) DO UPDATE SET used='t';" +
-				"INSERT INTO descriptors_scripts VALUES (@code, @descriptor, @idx, @script, @keypath) ON CONFLICT DO NOTHING;" +
+				"INSERT INTO scripts VALUES (@code, @script, @address) ON CONFLICT DO NOTHING;" +
+				"INSERT INTO descriptors_scripts VALUES (@code, @descriptor, @idx, @script, @keypath, 't') ON CONFLICT (code, descriptor, idx) DO UPDATE SET used='t';" +
 				"INSERT INTO wallets_scripts VALUES (@code, @script, @walletid, @descriptor, @idx) ON CONFLICT DO NOTHING;", parameters);
 		}
 
@@ -726,9 +725,7 @@ namespace NBXplorer
 				})
 				.ToArray();
 			await conn.Connection.ExecuteAsync("UPDATE descriptors SET next_idx=@next_index WHERE code=@code AND descriptor=@descriptor", parameters);
-			await conn.Connection.ExecuteAsync(
-				"WITH cte AS (SELECT code, script FROM descriptors_scripts WHERE code=@code AND descriptor=@descriptor AND idx < @next_index) " +
-				"UPDATE scripts s SET used='t' FROM cte WHERE s.code=cte.code AND s.script=cte.script", parameters);
+			await conn.Connection.ExecuteAsync("UPDATE descriptors_scripts SET used='t' WHERE code=@code AND descriptor=@descriptor AND idx < @next_index", parameters);
 
 			foreach (var p in highestKeyIndexFound.Where(k => k.Value is not null))
 				await GenerateAddresses(trackedSource.DerivationStrategy, p.Key);

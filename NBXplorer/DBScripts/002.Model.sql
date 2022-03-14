@@ -199,12 +199,21 @@ CREATE TABLE IF NOT EXISTS scripts (
   code TEXT NOT NULL,
   script TEXT NOT NULL,
   addr TEXT NOT NULL,
-  used BOOLEAN NOT NULL DEFAULT 'f'
-  /* PRIMARY KEY(code, script) See index below */
+  used BOOLEAN NOT NULL DEFAULT 'f',
+  PRIMARY KEY(code, script)
 );
-ALTER TABLE scripts DROP CONSTRAINT IF EXISTS scripts_pkey CASCADE;
-CREATE UNIQUE INDEX IF NOT EXISTS scripts_pkey ON scripts (code, script) INCLUDE (addr, used);
-ALTER TABLE scripts ADD CONSTRAINT scripts_pkey PRIMARY KEY USING INDEX scripts_pkey;
+
+CREATE OR REPLACE FUNCTION scripts_set_descriptors_scripts_used() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF NEW.used != OLD.used THEN
+    UPDATE descriptors_scripts ds SET used='t' WHERE code=NEW.code AND script=NEW.script AND used='f';
+  END IF;
+  RETURN NEW;
+END $$;
+
+CREATE TRIGGER scripts_update_trigger
+  AFTER UPDATE ON scripts
+  FOR EACH ROW EXECUTE PROCEDURE scripts_set_descriptors_scripts_used();
 
 CREATE TABLE IF NOT EXISTS outs (
   code TEXT NOT NULL,
@@ -450,6 +459,7 @@ CREATE TABLE IF NOT EXISTS descriptors_scripts (
   idx BIGINT NOT NULL,
   script TEXT NOT NULL,
   keypath TEXT NOT NULL,
+  used BOOLEAN NOT NULL DEFAULT 'f',
   /* PRIMARY KEY (code, descriptor, idx) , Enforced via index */
   FOREIGN KEY (code, script) REFERENCES scripts ON DELETE CASCADE
 );
@@ -458,7 +468,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS descriptors_scripts_pkey ON descriptors_script
 ALTER TABLE descriptors_scripts ADD CONSTRAINT descriptors_scripts_pkey PRIMARY KEY USING INDEX descriptors_scripts_pkey;
 CREATE INDEX IF NOT EXISTS descriptors_scripts_code_script ON descriptors_scripts (code, script);
 
-CREATE OR REPLACE FUNCTION descriptors_scripts_update_descriptor() RETURNS trigger LANGUAGE plpgsql AS $$
+CREATE OR REPLACE FUNCTION descriptors_scripts_after_insert_trigger_proc() RETURNS trigger LANGUAGE plpgsql AS $$
 DECLARE
   r RECORD;
 BEGIN
@@ -466,16 +476,26 @@ BEGIN
 	SELECT code, descriptor, MAX(idx) idx FROM new_descriptors_scripts
 	GROUP BY code, descriptor
   LOOP
-	UPDATE descriptors s SET next_idx = r.idx + 1, gap = s.gap + (r.idx + 1 - next_idx)
-	WHERE code=NEW.code AND descriptor=r.descriptor AND r.idx >= next_idx;
+	UPDATE descriptors s SET next_idx = r.idx + 1, gap = s.gap + (r.idx + 1 - s.next_idx)
+	WHERE code=r.code AND descriptor=r.descriptor AND next_idx < r.idx + 1;
   END LOOP;
   RETURN NULL;
 END $$;
 
-CREATE TRIGGER descriptors_scripts_insert_trigger
+CREATE OR REPLACE FUNCTION descriptors_scripts_before_insert_trigger_proc() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  NEW.used = (SELECT used FROM scripts WHERE code=NEW.code AND script=NEW.script);
+  RETURN NEW;
+END $$;
+
+CREATE TRIGGER descriptors_scripts_before_insert_trigger
+  BEFORE INSERT ON descriptors_scripts
+  FOR EACH ROW EXECUTE PROCEDURE descriptors_scripts_before_insert_trigger_proc();
+
+CREATE TRIGGER descriptors_scripts_after_insert_trigger
   AFTER INSERT ON descriptors_scripts
   REFERENCING NEW TABLE AS new_descriptors_scripts
-  FOR EACH STATEMENT EXECUTE PROCEDURE descriptors_scripts_update_descriptor();
+  FOR EACH STATEMENT EXECUTE PROCEDURE descriptors_scripts_after_insert_trigger_proc();
 
 
 CREATE TABLE IF NOT EXISTS wallets (
