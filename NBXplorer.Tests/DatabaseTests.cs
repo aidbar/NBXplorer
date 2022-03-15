@@ -41,15 +41,16 @@ namespace NBXplorer.Tests
 			// Turn block unconf then back to conf
 			await Benchmark(conn, "UPDATE blks SET confirmed='f' WHERE code='BTC' AND blk_id='c94d3162fbdd6773c490e50afd813c9eae06644fdd158c89c03a34ba5f7aacea';UPDATE blks SET confirmed='t' WHERE code='BTC' AND blk_id='c94d3162fbdd6773c490e50afd813c9eae06644fdd158c89c03a34ba5f7aacea';", 50);
 			await Benchmark(conn,
-				"SELECT ts.script, ts.addr, ts.descriptor, ts.keypath FROM ( VALUES ('BTC', 'blah'), ('BTC', 'blah'), ('BTC', 'blah'), ('BTC', 'blah')) r (code, script), " +
+				"SELECT ts.script, ts.addr, ts.derivation, ts.keypath, ts.redeem FROM ( VALUES ('BTC', 'blah'), ('BTC', 'blah'), ('BTC', 'blah'), ('BTC', 'blah')) r (code, script), " +
 				" LATERAL(" +
-				"	SELECT ws.script, s.addr, descriptor, ds.keypath " +
+				"	SELECT ws.script, s.addr, d.metadata->>'derivation' derivation, get_keypath(d.metadata, ds.idx) keypath, ds.metadata->>'redeem' redeem  " +
 				"	FROM wallets_scripts ws " +
 				"	LEFT JOIN descriptors_scripts ds USING (code, descriptor, idx) " +
+				"   LEFT JOIN descriptors d USING (code, descriptor) " +
 				"	JOIN scripts s ON s.code=ws.code AND s.script=ws.script " +
 				"   WHERE ws.code=r.code AND ws.script=r.script) ts;", 50);
 			await Benchmark(conn, "SELECT o.tx_id, o.idx, o.value, o.script FROM (VALUES ('BTC', 'hash', 5), ('BTC', 'hash', 5), ('BTC', 'hash', 5))  r (code, tx_id, idx) JOIN outs o USING (code, tx_id, idx);", 50);
-			await Benchmark(conn, "SELECT height, tx_id, wu.idx, value, script, keypath, mempool, spent_mempool, seen_at  FROM wallets_utxos wu JOIN descriptors_scripts USING (code, script) WHERE code='BTC' AND wallet_id='WHALE' AND immature IS FALSE", 50);
+			await Benchmark(conn, "SELECT height, tx_id, wu.idx, value, script, get_keypath(d.metadata, ds.idx) AS keypath, d.metadata->>'feature' feature, mempool, spent_mempool, seen_at FROM wallets_utxos wu JOIN descriptors_scripts ds USING (code, script) JOIN descriptors d USING (code, descriptor) WHERE code='BTC' AND wallet_id='WHALE' AND immature IS FALSE ", 50);
 			await Benchmark(conn, "SELECT * FROM get_wallets_histogram('WHALE', 'BTC', '', '2022-01-01'::timestamptz, '2022-02-01'::timestamptz, interval '1 day');", 50);
 		}
 
@@ -289,17 +290,17 @@ namespace NBXplorer.Tests
 				Assert.Equal(expectedGap, actual.gap);
 			}
 			await AssertGap(0, 0);
-			await conn.ExecuteAsync("INSERT INTO descriptors_scripts VALUES ('BTC', 'd1', 0, 's1', '');");
+			await conn.ExecuteAsync("INSERT INTO descriptors_scripts VALUES ('BTC', 'd1', 0, 's1');");
 			await AssertGap(1, 1);
-			await conn.ExecuteAsync("INSERT INTO descriptors_scripts VALUES ('BTC', 'd1', 1, 's1', '');");
+			await conn.ExecuteAsync("INSERT INTO descriptors_scripts VALUES ('BTC', 'd1', 1, 's1');");
 			await AssertGap(2, 2);
 			// 2 is used
-			await conn.ExecuteAsync("INSERT INTO descriptors_scripts VALUES ('BTC', 'd1', 2, 's-used', '');");
+			await conn.ExecuteAsync("INSERT INTO descriptors_scripts VALUES ('BTC', 'd1', 2, 's-used');");
 			await AssertGap(3, 0);
-			await conn.ExecuteAsync("INSERT INTO descriptors_scripts VALUES ('BTC', 'd1', 3, 's1', '');");
+			await conn.ExecuteAsync("INSERT INTO descriptors_scripts VALUES ('BTC', 'd1', 3, 's1');");
 			await AssertGap(4, 1);
 			// 4 is used
-			await conn.ExecuteAsync("INSERT INTO descriptors_scripts VALUES ('BTC', 'd1', 4, 's-used', '');");
+			await conn.ExecuteAsync("INSERT INTO descriptors_scripts VALUES ('BTC', 'd1', 4, 's-used');");
 			await AssertGap(5, 0);
 			// 4 get unused
 			await conn.ExecuteAsync("UPDATE descriptors_scripts SET used='f' WHERE idx=4;");

@@ -19,14 +19,17 @@ namespace NBXplorer.Controllers
 			DbConnectionFactory connectionFactory,
 			NBXplorerNetworkProvider networkProvider,
 			BitcoinDWaiters waiters,
-			KeyPathTemplates keyPathTemplates) : base(networkProvider, waiters)
+			KeyPathTemplates keyPathTemplates,
+			IRepositoryProvider repositoryProvider) : base(networkProvider, waiters)
 		{
 			ConnectionFactory = connectionFactory;
 			KeyPathTemplates = keyPathTemplates;
+			RepositoryProvider = repositoryProvider;
 		}
 
 		public DbConnectionFactory ConnectionFactory { get; }
 		public KeyPathTemplates KeyPathTemplates { get; }
+		public IRepositoryProvider RepositoryProvider { get; }
 
 		[HttpGet]
 		[Route("cryptos/{cryptoCode}/derivations/{derivationScheme}/balance")]
@@ -42,9 +45,9 @@ namespace NBXplorer.Controllers
 			if (trackedSource == null)
 				throw new ArgumentNullException(nameof(trackedSource));
 			var network = GetNetwork(cryptoCode, false);
-
+			var repo = (PostgresRepository)RepositoryProvider.GetRepository(cryptoCode);
 			await using var conn = await ConnectionFactory.CreateConnection();
-			var b = await conn.QueryFirstOrDefaultAsync("SELECT * FROM wallets_balances WHERE code=@code AND wallet_id=@walletId", new { code = network.CryptoCode, walletId = trackedSource.GetLegacyWalletId(network) });
+			var b = await conn.QueryFirstOrDefaultAsync("SELECT * FROM wallets_balances WHERE code=@code AND wallet_id=@walletId", new { code = network.CryptoCode, walletId = repo.GetWalletKey(trackedSource).wid });
 			if (b is null)
 			{
 				return Json(new GetBalanceResponse()
@@ -83,10 +86,12 @@ namespace NBXplorer.Controllers
 			if (trackedSource == null)
 				throw new ArgumentNullException(nameof(trackedSource));
 			var network = GetNetwork(cryptoCode, false);
+			var repo = (PostgresRepository)RepositoryProvider.GetRepository(cryptoCode);
+
 			await using var conn = await ConnectionFactory.CreateConnection();
 			var height = await conn.ExecuteScalarAsync<long>("SELECT height FROM get_tip(@code)", new { code = network.CryptoCode });
-			string join = derivationScheme is null ? string.Empty : " JOIN descriptors_scripts USING (code, script)";
-			string column = derivationScheme is null ? "NULL as keypath" : " keypath";
+			string join = derivationScheme is null ? string.Empty : " JOIN descriptors_scripts ds USING (code, script) JOIN descriptors d USING (code, descriptor)";
+			string column = derivationScheme is null ? "NULL as keypath, NULL as feature" : "get_keypath(d.metadata, ds.idx) AS keypath, d.metadata->>'feature' feature";
 			var utxos = (await conn.QueryAsync<(
 				long? height,
 				string tx_id,
@@ -94,9 +99,12 @@ namespace NBXplorer.Controllers
 				long value,
 				string script,
 				string keypath,
+				string feature,
 				bool mempool,
 				bool spent_mempool,
-				DateTime tx_seen_at)>($"SELECT height, tx_id, wu.idx, value, script, {column}, mempool, spent_mempool, seen_at FROM wallets_utxos wu {join} WHERE code=@code AND wallet_id=@walletId AND immature IS FALSE", new { code = network.CryptoCode, walletId = trackedSource.GetLegacyWalletId(network) }));
+				DateTime tx_seen_at)>(
+				$"SELECT height, tx_id, wu.idx, value, script, {column}, mempool, spent_mempool, seen_at " +
+				$"FROM wallets_utxos wu {join} WHERE code=@code AND wallet_id=@walletId AND immature IS FALSE", new { code = network.CryptoCode, walletId = repo.GetWalletKey(trackedSource).wid }));
 			UTXOChanges changes = new UTXOChanges()
 			{
 				CurrentHeight = (int)height,
@@ -118,10 +126,11 @@ namespace NBXplorer.Controllers
 				{
 					u.Confirmations = (int)(height - utxo.height + 1);
 				}
+
 				if (utxo.keypath is not null)
 				{
 					u.KeyPath = KeyPath.Parse(utxo.keypath);
-					u.Feature = KeyPathTemplates.GetDerivationFeature(u.KeyPath);
+					u.Feature = Enum.Parse<DerivationFeature>(utxo.feature);
 				}
 				if (!utxo.mempool)
 					changes.Confirmed.UTXOs.Add(u);

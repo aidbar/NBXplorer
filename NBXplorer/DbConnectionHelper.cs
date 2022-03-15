@@ -45,11 +45,6 @@ namespace NBXplorer
 			return Connection.DisposeAsync();
 		}
 
-		public async Task<bool> CreateWallet(string walletId)
-		{
-			return await Connection.ExecuteAsync("INSERT INTO wallets VALUES (@id) ON CONFLICT DO NOTHING", new { id = walletId }) == 1;
-		}
-
 		public record NewOut(uint256 txId, int idx, Script script, Money value, string? assetId = null);
 		public record NewIn(uint256 txId, int idx, uint256 spentTxId, int spentIdx);
 
@@ -144,65 +139,6 @@ namespace NBXplorer
 				await Connection.ExecuteAsync("INSERT INTO txs VALUES (@code, @id, @raw, @blk_id, @blk_idx, @mempool, NULL, @seen_at) ON CONFLICT (code, tx_id) DO UPDATE SET seen_at=LEAST(@seen_at, txs.seen_at), raw = COALESCE(@raw, txs.raw)", parameters);
 			await Connection.ExecuteAsync("INSERT INTO blks_txs VALUES (@code, @blk_id, @id, @blk_idx) ON CONFLICT DO NOTHING", parameters.Where(p => p.blk_id is not null).AsList());
 		}
-		public async Task CreateDescriptors(Descriptor[] descriptors)
-		{
-			var rows = descriptors.Select(c => new { code = Network.CryptoCode, descriptor = c.ToString() }).ToArray();
-			await Connection.ExecuteAsync(
-				"INSERT INTO descriptors VALUES (@code, @descriptor) ON CONFLICT DO NOTHING;", rows);
-		}
-		record DescriptorScriptInsert(string code, string descriptor, int idx, string script, string keypath, string addr, string walletid);
-		public async Task<int> GenerateAddresses(string walletId, Descriptor descriptor, GenerateAddressQuery? query)
-		{
-			query = query ?? new GenerateAddressQuery();
-			var gap = await Connection.ExecuteScalarAsync<int>(
-				"SELECT gap FROM descriptors " +
-				"WHERE code=@code AND descriptor=@descriptor", new { code = Network.CryptoCode, descriptor = descriptor.ToString() });
-			if (gap >= MinPoolSize)
-				return 0;
-			var toGenerate = Math.Max(0, MaxPoolSize - gap);
-			if (query.MaxAddresses is int max)
-				toGenerate = Math.Min(max, toGenerate);
-			if (query.MinAddresses is int min)
-				toGenerate = Math.Max(min, toGenerate);
-			if (toGenerate == 0)
-				return 0;
-			retry:
-			var row = await Connection.ExecuteScalarAsync<int?>("SELECT next_idx FROM descriptors WHERE code=@code AND descriptor=@descriptor", new { code = Network.CryptoCode, descriptor = descriptor.ToString() });
-			if (row is null && descriptor is LegacyDescriptor legacy)
-			{
-				var wid = new DerivationSchemeTrackedSource(legacy.DerivationStrategy).GetLegacyWalletId(Network);
-				await this.CreateWallet(wid);
-				await this.CreateDescriptors(new[] { descriptor });
-				goto retry;
-			}
-			if (row is null)
-				return 0;
-			var nextIndex = row.Value;
-
-			var line = descriptor.GetLineFor();
-			var scriptpubkeys = new Script[toGenerate];
-			var linesScriptpubkeys = new DescriptorScriptInsert[toGenerate];
-			var descStr = descriptor.ToString()!;
-			Parallel.For(nextIndex, nextIndex + toGenerate, i =>
-			{
-				var derivation = line.Derive((uint)i);
-				scriptpubkeys[i - nextIndex] = derivation.ScriptPubKey;
-				linesScriptpubkeys[i - nextIndex] = new DescriptorScriptInsert(
-					Network.CryptoCode,
-					descStr,
-					i,
-					derivation.ScriptPubKey.ToHex(),
-					line.KeyPathTemplate.GetKeyPath(i, false).ToString(),
-					derivation.ScriptPubKey.GetDestinationAddress(Network.NBitcoinNetwork).ToString(),
-					walletId);
-			});
-
-			await Connection.ExecuteAsync(
-				"INSERT INTO scripts VALUES (@code, @script, @addr) ON CONFLICT DO NOTHING;" +
-				"INSERT INTO descriptors_scripts VALUES (@code, @descriptor, @idx, @script, @keypath) ON CONFLICT DO NOTHING;" +
-				"INSERT INTO wallets_scripts VALUES(@code, @script, @walletid, @descriptor, @idx) ON CONFLICT DO NOTHING;", linesScriptpubkeys);
-			return toGenerate;
-		}
 
 		public async Task<Dictionary<OutPoint, TxOut>> GetOutputs(IEnumerable<OutPoint> outPoints)
 		{
@@ -231,36 +167,6 @@ namespace NBXplorer
 				result.TryAdd(new OutPoint(uint256.Parse(reader.GetString(0)), reader.GetInt32(1)), txout);
 			}
 			return result;
-		}
-
-		record UnusedScriptRow(string script, string addr, string keypath);
-		public async Task<KeyPathInformation?> GetUnused(LegacyDescriptor descriptor, int skip, bool reserve)
-		{
-			retry:
-			var unused = await Connection.QueryFirstOrDefaultAsync<UnusedScriptRow>(
-				"SELECT s.script, s.addr, ds.keypath FROM descriptors_scripts ds " +
-				"INNER JOIN scripts s USING (code, script) " +
-				"WHERE ds.code=@code AND ds.descriptor=@descriptor AND ds.used='f' " +
-				"LIMIT 1 OFFSET @skip", new { code = Network.CryptoCode, descriptor = descriptor.ToString(), skip });
-			if (unused is null)
-				return null;
-			if (reserve)
-			{
-				var updated = await Connection.ExecuteAsync("UPDATE descriptors_scripts SET used='t' WHERE code=@code AND script=@script AND descriptor=@descriptor AND used='f'", new { code = Network.CryptoCode, unused.script, descriptor = descriptor.ToString() });
-				if (updated == 0)
-					goto retry;
-			}
-			var keypath = KeyPath.Parse(unused.keypath);
-			return new KeyPathInformation()
-			{
-				Address = BitcoinAddress.Create(unused.addr, Network.NBitcoinNetwork),
-				DerivationStrategy = descriptor.DerivationStrategy,
-				KeyPath = keypath,
-				ScriptPubKey = Script.FromHex(unused.script),
-				TrackedSource = new DerivationSchemeTrackedSource(descriptor.DerivationStrategy),
-				Feature = KeyPathTemplates.GetDerivationFeature(keypath),
-				// TODO: Redeem = 
-			};
 		}
 
 		public async Task<SlimChainedBlock?> GetTip()

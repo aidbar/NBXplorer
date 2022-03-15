@@ -37,8 +37,6 @@ namespace NBXplorer.Models
 			return true;
 		}
 
-		public abstract string GetLegacyWalletId(NBXplorerNetwork network);
-
 		public override bool Equals(object obj)
 		{
 			TrackedSource item = obj as TrackedSource;
@@ -114,11 +112,6 @@ namespace NBXplorer.Models
 			Address = address;
 		}
 
-		public override string GetLegacyWalletId(NBXplorerNetwork network)
-		{
-			return $"Legacy({network.CryptoCode}):{_FullAddressString}";
-		}
-
 		string _FullAddressString;
 
 		public BitcoinAddress Address
@@ -166,11 +159,6 @@ namespace NBXplorer.Models
 		}
 
 		public DerivationStrategy.DerivationStrategyBase DerivationStrategy { get; }
-
-		public override string GetLegacyWalletId(NBXplorerNetwork network)
-		{
-			return $"Legacy({network.CryptoCode}):{this.ToString()}";
-		}
 
 		public static bool TryParse(ReadOnlySpan<char> strSpan, out DerivationSchemeTrackedSource derivationSchemeTrackedSource, NBXplorerNetwork network)
 		{

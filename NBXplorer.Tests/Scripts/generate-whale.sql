@@ -110,10 +110,10 @@ INSERT INTO ins_outs
 	JOIN txs t ON t.code=o.code AND t.tx_id=o.tx_id;
 
 INSERT INTO wallets VALUES ('WHALE');
-INSERT INTO descriptors VALUES ('BTC', 'WHALEDESC', 0);
+INSERT INTO descriptors VALUES ('BTC', 'WHALEDESC');
 
 INSERT INTO descriptors_scripts
-SELECT 'BTC', 'WHALEDESC', s, encode(sha256(('s-' || s)::bytea), 'hex') script, s
+SELECT 'BTC', 'WHALEDESC', s, encode(sha256(('s-' || s)::bytea), 'hex') script
 FROM generate_series(0, 223000) s;
 
 INSERT INTO wallets_scripts

@@ -448,6 +448,9 @@ CREATE TRIGGER ins_delete_trigger
 CREATE TABLE IF NOT EXISTS descriptors (
   code TEXT NOT NULL,
   descriptor TEXT NOT NULL,
+  -- Custom data for the indexer (eg. keypathtemplate)
+  metadata JSONB NULL DEFAULT NULL,
+  -- next_idx and gap are updated during insertion or update to descriptors_scripts
   next_idx BIGINT DEFAULT 0,
   gap BIGINT DEFAULT 0,
   PRIMARY KEY (code, descriptor)
@@ -458,7 +461,8 @@ CREATE TABLE IF NOT EXISTS descriptors_scripts (
   descriptor TEXT NOT NULL,
   idx BIGINT NOT NULL,
   script TEXT NOT NULL,
-  keypath TEXT NOT NULL,
+  -- Custom data for the indexer (eg. redeem scripts)
+  metadata JSONB DEFAULT NULL,
   used BOOLEAN NOT NULL DEFAULT 'f',
   /* PRIMARY KEY (code, descriptor, idx) , Enforced via index */
   FOREIGN KEY (code, script) REFERENCES scripts ON DELETE CASCADE

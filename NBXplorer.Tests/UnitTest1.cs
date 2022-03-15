@@ -3282,6 +3282,12 @@ namespace NBXplorer.Tests
 				key = new BitcoinExtKey(new ExtKey(), tester.Network);
 				pubkey = tester.CreateDerivationStrategy(key.Neuter());
 				Assert.Null(tester.Client.GetKeyInformation(pubkey, pubkey.GetDerivation(new KeyPath("0/0")).ScriptPubKey));
+
+				var pubkey2 = tester.NBXplorerNetwork.DerivationStrategyFactory.Parse("tpubD6NzVbkrYhZ4WxGZajmwTaAcWgUMTx8Syf2JwakRtGLjxTa8L8aZpYq4zas8yhr6XRCoSaQKjdmjMe8x8FuBFLe4HnEs3NSQWXAh7Pjnvoa-[p2sh]");
+				tester.Client.Track(pubkey2);
+				var ki = tester.Client.GetUnused(pubkey2, DerivationFeature.Deposit);
+				Assert.Equal("00149ef4739460cd69a19598a651a42ca91a9865b74f", ki.Redeem.ToHex());
+				Assert.Equal("2MuawW29mtrQzJSVyHkaaoS1RjBE2oLYFjD", ki.Address.ToString());
 			}
 		}
 
@@ -3372,6 +3378,7 @@ namespace NBXplorer.Tests
 				var info = WaitScanFinish(tester.Client, pubkey);
 				Assert.Equal(2, info.Progress.Found);
 
+				var aaa = tester.Client.GetBalance(pubkey);
 				// Rescanning should find 0/50
 				transaction = tester.Client.GetTransactions(pubkey).ConfirmedTransactions.Transactions.Single();
 				Assert.Equal(2, transaction.Outputs.Count());

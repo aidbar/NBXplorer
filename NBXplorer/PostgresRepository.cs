@@ -16,6 +16,9 @@ using Microsoft.Extensions.Logging;
 using Npgsql;
 using NBitcoin.RPC;
 using System.Text;
+using Newtonsoft.Json;
+using Newtonsoft.Json.Converters;
+using Newtonsoft.Json.Linq;
 
 namespace NBXplorer
 {
@@ -106,6 +109,7 @@ namespace NBXplorer
 		}
 
 		public int BatchSize { get; set; }
+
 		public int MaxPoolSize { get; set; }
 		public int MinPoolSize { get; set; }
 		public Money MinUtxoValue { get; set; }
@@ -120,12 +124,13 @@ namespace NBXplorer
 			var parameters = keyPaths
 				.Select(o =>
 				{
-					var descriptor = new LegacyDescriptor(strategy, KeyPathTemplates.GetKeyPathTemplate(o));
+					var template = KeyPathTemplates.GetKeyPathTemplate(o);
+					var descriptor = GetDescriptorKey(strategy, KeyPathTemplates.GetDerivationFeature(o));
 					return new
 					{
-						code = Network.CryptoCode,
-						descriptor = descriptor.ToString(),
-						idx = (int)descriptor.KeyPathTemplate.GetIndex(o)
+						descriptor.code,
+						descriptor.descriptor,
+						idx = (int)template.GetIndex(o)
 					};
 				})
 				.ToList();
@@ -148,11 +153,97 @@ namespace NBXplorer
 			return default;
 		}
 
+		public record DescriptorKey(string code, string descriptor);
+		DescriptorKey GetDescriptorKey(DerivationStrategyBase strategy, DerivationFeature derivationFeature)
+		{
+			return new DescriptorKey(Network.CryptoCode, strategy.ToString() + "|" + derivationFeature);
+		}
+		public record WalletKey(string wid);
+		WalletKey GetWalletKey(DerivationStrategyBase strategy)
+		{
+			return new WalletKey(Network.CryptoCode + "|" + strategy.ToString());
+		}
+		WalletKey GetWalletKey(IDestination destination)
+		{
+			return new WalletKey(Network.CryptoCode + "|" + destination.ScriptPubKey.GetDestinationAddress(Network.NBitcoinNetwork));
+		}
+		internal WalletKey GetWalletKey(TrackedSource source)
+		{
+			if (source is null)
+				throw new ArgumentNullException(nameof(source));
+			return source switch
+			{
+				DerivationSchemeTrackedSource derivation => GetWalletKey(derivation.DerivationStrategy),
+				AddressTrackedSource addr => GetWalletKey(addr.Address),
+				_ => throw new NotSupportedException(source.GetType().ToString())
+			};
+		}
+
+		record DescriptorScriptInsert(string code, string descriptor, int idx, string script, string redeem, string addr, string walletid);
 		public async Task<int> GenerateAddresses(DerivationStrategyBase strategy, DerivationFeature derivationFeature, GenerateAddressQuery query = null)
 		{
-			await using var connection = await connectionFactory.CreateConnectionHelper(Network);
-			var wid = new DerivationSchemeTrackedSource(strategy).GetLegacyWalletId(Network);
-			return await connection.GenerateAddresses(wid, new LegacyDescriptor(strategy, KeyPathTemplates.GetKeyPathTemplate(derivationFeature)), query);
+			await using var connection = await connectionFactory.CreateConnection();
+			query = query ?? new GenerateAddressQuery();
+
+			var descriptorKey = GetDescriptorKey(strategy, derivationFeature);
+			var walletKey = GetWalletKey(strategy);
+			var gap = await connection.ExecuteScalarAsync<int>(
+				"SELECT gap FROM descriptors " +
+				"WHERE code=@code AND descriptor=@descriptor", descriptorKey);
+			if (gap >= MinPoolSize)
+				return 0;
+			var toGenerate = Math.Max(0, MaxPoolSize - gap);
+			if (query.MaxAddresses is int max)
+				toGenerate = Math.Min(max, toGenerate);
+			if (query.MinAddresses is int min)
+				toGenerate = Math.Max(min, toGenerate);
+			if (toGenerate == 0)
+				return 0;
+			var keyTemplate = KeyPathTemplates.GetKeyPathTemplate(derivationFeature);
+			retry:
+			var row = await connection.ExecuteScalarAsync<int?>("SELECT next_idx FROM descriptors WHERE code=@code AND descriptor=@descriptor", descriptorKey);
+			if (row is null)
+			{
+				await connection.ExecuteAsync("INSERT INTO wallets VALUES (@wid) ON CONFLICT DO NOTHING", walletKey);
+				await connection.ExecuteAsync("INSERT INTO descriptors VALUES (@code, @descriptor, @metadata::JSONB) ON CONFLICT DO NOTHING;", new
+				{
+					descriptorKey.code,
+					descriptorKey.descriptor,
+					metadata = Serializer.ToString(new LegacyDescriptorMetadata()
+					{
+						Derivation = strategy,
+						Feature = derivationFeature,
+						KeyPathTemplate = keyTemplate,
+						Type = LegacyDescriptorMetadata.TypeName
+					})
+				});
+				goto retry;
+			}
+			if (row is null)
+				return 0;
+			var nextIndex = row.Value;
+			var line = strategy.GetLineFor(keyTemplate);
+			var scriptpubkeys = new Script[toGenerate];
+			var linesScriptpubkeys = new DescriptorScriptInsert[toGenerate];
+			Parallel.For(nextIndex, nextIndex + toGenerate, i =>
+			{
+				var derivation = line.Derive((uint)i);
+				scriptpubkeys[i - nextIndex] = derivation.ScriptPubKey;
+				linesScriptpubkeys[i - nextIndex] = new DescriptorScriptInsert(
+					descriptorKey.code,
+					descriptorKey.descriptor,
+					i,
+					derivation.ScriptPubKey.ToHex(),
+					derivation.Redeem?.ToHex() is string r ? $"{{\"redeem\":\"{r}\"}}" : null,
+					derivation.ScriptPubKey.GetDestinationAddress(Network.NBitcoinNetwork).ToString(),
+					walletKey.wid);
+			});
+
+			await connection.ExecuteAsync(
+				"INSERT INTO scripts VALUES (@code, @script, @addr) ON CONFLICT DO NOTHING;" +
+				"INSERT INTO descriptors_scripts VALUES (@code, @descriptor, @idx, @script, @redeem::JSONB) ON CONFLICT DO NOTHING;" +
+				"INSERT INTO wallets_scripts VALUES(@code, @script, @walletid, @descriptor, @idx) ON CONFLICT DO NOTHING;", linesScriptpubkeys);
+			return toGenerate;
 		}
 
 		public Task<int> GenerateAddresses(DerivationStrategyBase strategy, DerivationFeature derivationFeature, int maxAddresses)
@@ -218,7 +309,7 @@ namespace NBXplorer
 				result.AddRange(s, Array.Empty<KeyPathInformation>());
 			var command = connection.CreateCommand();
 			StringBuilder builder = new StringBuilder();
-			builder.Append("SELECT ts.script, ts.addr, ts.descriptor, ts.keypath FROM ( VALUES ");
+			builder.Append("SELECT ts.script, ts.addr, ts.derivation, ts.keypath, ts.redeem FROM ( VALUES ");
 			int idx = 0;
 			foreach (var s in scripts)
 			{
@@ -231,9 +322,10 @@ namespace NBXplorer
 				return result;
 			builder.Append(") r (code, script)," +
 				" LATERAL (" +
-				"	SELECT ws.script, s.addr, descriptor, ds.keypath " +
+				"	SELECT ws.script, s.addr, d.metadata->>'derivation' derivation, get_keypath(d.metadata, ds.idx) keypath, ds.metadata->>'redeem' redeem " +
 				"	FROM wallets_scripts ws " +
 				"	LEFT JOIN descriptors_scripts ds USING (code, descriptor, idx) " +
+				"   LEFT JOIN descriptors d USING (code, descriptor) " +
 				"	JOIN scripts s ON s.code=ws.code AND s.script=ws.script " +
 				"   WHERE ws.code=r.code AND ws.script=r.script) ts;");
 			command.CommandText = builder.ToString();
@@ -242,11 +334,11 @@ namespace NBXplorer
 			{
 				bool isExplicit = reader.IsDBNull(3);
 				bool isDescriptor = !isExplicit;
-				var descriptor = isDescriptor ? Descriptor.Parse(reader.GetString(2), Network) : null;
 				var script = Script.FromHex(reader.GetString(0));
-				var derivationStrategy = (descriptor as LegacyDescriptor)?.DerivationStrategy;
+				var derivationStrategy = isDescriptor ? Network.DerivationStrategyFactory.Parse(reader.GetString(2)) : null;
 				var addr = BitcoinAddress.Create(reader.GetString(1), Network.NBitcoinNetwork);
 				var keypath = isDescriptor ? KeyPath.Parse(reader.GetString(3)) : null;
+				var redeem = reader.IsDBNull(4) ? null : reader.GetString(4);
 				result.Add(script, new KeyPathInformation()
 				{
 					Address = addr,
@@ -255,10 +347,19 @@ namespace NBXplorer
 					ScriptPubKey = script,
 					TrackedSource = isDescriptor && derivationStrategy is not null ? new DerivationSchemeTrackedSource(derivationStrategy) :
 									isExplicit ? new AddressTrackedSource(addr) : null,
-					Feature = keypath is null ? DerivationFeature.Deposit : KeyPathTemplates.GetDerivationFeature(keypath)
+					Feature = keypath is null ? DerivationFeature.Deposit : KeyPathTemplates.GetDerivationFeature(keypath),
+					Redeem = redeem is null ? null : Script.FromHex(redeem)
 				});
 			}
 			return result;
+		}
+
+		internal LegacyDescriptorMetadata GetDescriptorMetadata(string str)
+		{
+			var o = JObject.Parse(str);
+			if (o["type"].Value<string>() != LegacyDescriptorMetadata.TypeName)
+				return null;
+			return this.Serializer.ToObject<LegacyDescriptorMetadata>(o);
 		}
 
 		FixedSizeCache<uint256, uint256> noMatchCache = new FixedSizeCache<uint256, uint256>(5000, k => k);
@@ -430,13 +531,14 @@ namespace NBXplorer
 			var tip = await connection.GetTip();
 			if (tip is null)
 				return Array.Empty<TrackedTransaction>();
-			var utxos = await 
+			var utxos = await
 				connection.Connection.QueryAsync<(string tx_id, long idx, string block_id, bool is_out, string spent_tx_id, long spent_idx, string script, long value, bool immature, string keypath, DateTime seen_at)>(
-				"SELECT io.tx_id, io.idx, io.blk_id, io.is_out, io.spent_tx_id, io.spent_idx, io.script, io.value, io.immature, ds.keypath, io.seen_at " +
+				"SELECT io.tx_id, io.idx, io.blk_id, io.is_out, io.spent_tx_id, io.spent_idx, io.script, io.value, io.immature, get_keypath(d.metadata, ds.idx) keypath, io.seen_at " +
 				"FROM wallets_scripts ws " +
 				"LEFT JOIN descriptors_scripts ds USING (code, descriptor, idx) " +
+				"LEFT JOIN descriptors d USING (code, descriptor) " +
 				"JOIN ins_outs io ON io.code=ws.code AND io.script=ws.script " +
-				"WHERE ws.code=@code AND ws.wallet_id=@walletId", new { code = Network.CryptoCode, walletId = trackedSource.GetLegacyWalletId(Network) });
+				"WHERE ws.code=@code AND ws.wallet_id=@walletId", new { code = Network.CryptoCode, walletId = GetWalletKey(trackedSource).wid });
 			utxos.TryGetNonEnumeratedCount(out int c);
 			var trackedById = new Dictionary<string, TrackedTransaction>(c);
 			var txIdStr = txId?.ToString();
@@ -461,7 +563,7 @@ namespace NBXplorer
 				}
 			}
 
-			var txsToFetch = includeTransactions ? trackedById.Keys.AsList() : 
+			var txsToFetch = includeTransactions ? trackedById.Keys.AsList() :
 												  // For double spend detection, we need the full transactions from unconfs
 												  trackedById.Where(t => t.Value.BlockHash is null).Select(t => t.Key).AsList();
 			var txRaws = await connection.Connection.QueryAsync<(string tx_id, byte[] raw)>(
@@ -495,47 +597,91 @@ namespace NBXplorer
 
 		public async Task<KeyPathInformation> GetUnused(DerivationStrategyBase strategy, DerivationFeature derivationFeature, int n, bool reserve)
 		{
-			await using var connection = await connectionFactory.CreateConnectionHelper(Network);
-			 var keyInfo = await connection.GetUnused(new LegacyDescriptor(strategy, KeyPathTemplates.GetKeyPathTemplate(derivationFeature)), n, reserve);
-			if (keyInfo != null)
-				await ImportAddressToRPC(connection, keyInfo.TrackedSource, keyInfo.Address, keyInfo.KeyPath);
+			await using var helper = await connectionFactory.CreateConnectionHelper(Network);
+			var connection = helper.Connection;
+			var key = GetDescriptorKey(strategy, derivationFeature);
+			retry:
+			var unused = await connection.QueryFirstOrDefaultAsync(
+				"SELECT s.script, s.addr, get_keypath(d.metadata , ds.idx) keypath, ds.metadata->>'redeem' redeem FROM descriptors_scripts ds " +
+				"JOIN scripts s USING (code, script) " +
+				"JOIN descriptors d USING (code, descriptor) " +
+				"WHERE ds.code=@code AND ds.descriptor=@descriptor AND ds.used='f' " +
+				"LIMIT 1 OFFSET @skip", new { key.code, key.descriptor, skip = n });
+			if (unused is null)
+				return null;
+			if (reserve)
+			{
+				var updated = await connection.ExecuteAsync("UPDATE descriptors_scripts SET used='t' WHERE code=@code AND script=@script AND descriptor=@descriptor AND used='f'", new { key.code, unused.script, key.descriptor });
+				if (updated == 0)
+					goto retry;
+			}
+			var keypath = KeyPath.Parse(unused.keypath);
+			var keyInfo = new KeyPathInformation()
+			{
+				Address = BitcoinAddress.Create(unused.addr, Network.NBitcoinNetwork),
+				DerivationStrategy = strategy,
+				KeyPath = keypath,
+				ScriptPubKey = Script.FromHex(unused.script),
+				TrackedSource = new DerivationSchemeTrackedSource(strategy),
+				Feature = KeyPathTemplates.GetDerivationFeature(keypath),
+				Redeem = unused.redeem is string s ? Script.FromHex(s) : null
+			};
+			await ImportAddressToRPC(helper, keyInfo.TrackedSource, keyInfo.Address, keyInfo.KeyPath);
 			return keyInfo;
 		}
 
+		record KeyInfoInsert(string code, string descriptor, string script, string address, long? idx, string walletid, string redeem);
 		public async Task SaveKeyInformations(KeyPathInformation[] keyPathInformations)
 		{
 			await using var connection = await connectionFactory.CreateConnectionHelper(Network);
-
-			var parameters = keyPathInformations
-				.Select(kpi => new
+			var inserts = new List<KeyInfoInsert>();
+			foreach (var ki in keyPathInformations)
+			{
+				var descriptorKey = ki.TrackedSource is DerivationSchemeTrackedSource a ? GetDescriptorKey(a.DerivationStrategy, ki.Feature) : null;
+				var wid = GetWalletKey(ki.TrackedSource).wid;
+				if (descriptorKey is not null)
 				{
-					code = Network.CryptoCode,
-					descriptor = ToDescriptor(kpi.TrackedSource, KeyPathTemplates.GetKeyPathTemplate(kpi.Feature)).ToString(),
-					script = kpi.ScriptPubKey.ToHex(),
-					address = kpi.Address.ToString(),
-					idx = kpi.GetIndex(),
-					keypath = kpi.KeyPath.ToString(),
-					walletid = kpi.TrackedSource.GetLegacyWalletId(Network)
-				})
-				.ToArray();
+					inserts.Add(new KeyInfoInsert(
+						Network.CryptoCode,
+						descriptorKey.descriptor,
+						ki.ScriptPubKey.ToHex(),
+						ki.Address.ToString(),
+						ki.GetIndex(),
+						wid,
+						ki.Redeem is null ? null : $"{{\"redeem\":\"{ki.Redeem.ToHex()}\"}}"));
+				}
+				else
+				{
+					inserts.Add(new KeyInfoInsert(
+						Network.CryptoCode,
+						null,
+						ki.ScriptPubKey.ToHex(),
+						ki.Address.ToString(),
+						null,
+						wid,
+						null));
+				}
+			}
+
+			var hdParameters = inserts.Where(i => i.descriptor is not null).ToList();
 			await connection.Connection.ExecuteAsync(
 				"INSERT INTO scripts VALUES (@code, @script, @address) ON CONFLICT DO NOTHING;" +
-				"INSERT INTO descriptors_scripts VALUES (@code, @descriptor, @idx, @script, @keypath, 't') ON CONFLICT (code, descriptor, idx) DO UPDATE SET used='t';" +
-				"INSERT INTO wallets_scripts VALUES (@code, @script, @walletid, @descriptor, @idx) ON CONFLICT DO NOTHING;", parameters);
-		}
+				"INSERT INTO descriptors_scripts VALUES (@code, @descriptor, @idx, @script, @redeem::JSONB, 't') ON CONFLICT (code, descriptor, idx) DO UPDATE SET used='t';" +
+				"INSERT INTO wallets_scripts VALUES (@code, @script, @walletid, @descriptor, @idx) ON CONFLICT DO NOTHING;", hdParameters);
 
-		private LegacyDescriptor ToDescriptor(TrackedSource trackedSource, KeyPathTemplate keyPathTemplate)
-		{
-			return new LegacyDescriptor(((DerivationSchemeTrackedSource)trackedSource).DerivationStrategy, keyPathTemplate);
+			var singleParameters = inserts.Where(i => i.descriptor is null).ToList();
+			await connection.Connection.ExecuteAsync(
+				"INSERT INTO scripts VALUES (@code, @script, @address) ON CONFLICT DO NOTHING;" +
+				"INSERT INTO wallets_scripts VALUES (@code, @script, @walletid, @descriptor, @idx) ON CONFLICT DO NOTHING;", singleParameters);
 		}
 
 		private async Task ImportAddressToRPC(DbConnectionHelper connection, TrackedSource trackedSource, BitcoinAddress address, KeyPath keyPath)
 		{
-			var wid = trackedSource.GetLegacyWalletId(Network);
-			var shouldImportRPC = (await connection.GetMetadata<string>(wid, WellknownMetadataKeys.ImportAddressToRPC)).AsBoolean();
+			var k = GetWalletKey(trackedSource);
+			var shouldImportRPC = (await connection.GetMetadata<string>(k.wid, WellknownMetadataKeys.ImportAddressToRPC)).AsBoolean();
 			if (!shouldImportRPC)
 				return;
-			var accountKey = await connection.GetMetadata<BitcoinExtKey>(wid, WellknownMetadataKeys.AccountHDKey);
+			var accountKey = await connection.GetMetadata<BitcoinExtKey>(k.wid, WellknownMetadataKeys.AccountHDKey);
 			await ImportAddressToRPC(accountKey, address, keyPath);
 		}
 		private async Task ImportAddressToRPC(BitcoinExtKey accountKey, BitcoinAddress address, KeyPath keyPath)
@@ -647,18 +793,19 @@ namespace NBXplorer
 		public async Task SaveMetadata<TMetadata>(TrackedSource source, string key, TMetadata value) where TMetadata : class
 		{
 			await using var helper = await connectionFactory.CreateConnectionHelper(Network);
-			var wid = source.GetLegacyWalletId(Network);
-			if (!await helper.SetMetadata(wid, key, value))
+			var walletKey = GetWalletKey(source);
+			if (!await helper.SetMetadata(walletKey.wid, key, value))
 			{
-				await helper.CreateWallet(wid);
-				await helper.SetMetadata(wid, key, value);
+				await helper.Connection.ExecuteAsync("INSERT INTO wallets VALUES (@wid) ON CONFLICT DO NOTHING", walletKey);
+				await helper.SetMetadata(walletKey.wid, key, value);
 			}
 		}
+
 		public async Task<TMetadata> GetMetadata<TMetadata>(TrackedSource source, string key) where TMetadata : class
 		{
 			await using var helper = await connectionFactory.CreateConnectionHelper(Network);
-			var wid = source.GetLegacyWalletId(Network);
-			return await helper.GetMetadata<TMetadata>(wid, key);
+			var walletKey = GetWalletKey(source);
+			return await helper.GetMetadata<TMetadata>(walletKey.wid, key);
 		}
 
 		public async Task<List<Repository.SavedTransaction>> SaveTransactions(DateTimeOffset now, Transaction[] transactions, uint256 blockHash)
@@ -682,7 +829,7 @@ namespace NBXplorer
 		public async Task Track(IDestination address)
 		{
 			await using var conn = await GetConnection();
-			var walletId = ((AddressTrackedSource)address).GetLegacyWalletId(Network);
+			var walletId = GetWalletKey(address).wid;
 			await conn.Connection.ExecuteAsync(
 				"INSERT INTO wallets VALUES (@walletId) ON CONFLICT DO NOTHING;" +
 				"INSERT INTO scripts VALUES (@code, @script, @addr) ON CONFLICT DO NOTHING;" +
@@ -707,7 +854,7 @@ namespace NBXplorer
 		public async Task UpdateAddressPool(DerivationSchemeTrackedSource trackedSource, Dictionary<DerivationFeature, int?> highestKeyIndexFound)
 		{
 			await using var conn = await GetConnection();
-			
+
 			var parameters = KeyPathTemplates
 				.GetSupportedDerivationFeatures()
 				.Select(p =>
@@ -720,7 +867,7 @@ namespace NBXplorer
 				.Select(p => new
 				{
 					code = Network.CryptoCode,
-					descriptor = new LegacyDescriptor(trackedSource.DerivationStrategy, KeyPathTemplates.GetKeyPathTemplate(p.DerivationFeature)).ToString(),
+					descriptor = this.GetDescriptorKey(trackedSource.DerivationStrategy, p.DerivationFeature).descriptor,
 					next_index = p.HighestKeyIndexFound + 1
 				})
 				.ToArray();
@@ -758,5 +905,18 @@ namespace NBXplorer
 					blk_id = blockHash.ToString()
 				});
 		}
+	}
+
+	public class LegacyDescriptorMetadata
+	{
+		public const string TypeName = "LegacyDescriptorMetadata";
+		[JsonProperty]
+		public string Type { get; set; }
+		[JsonProperty]
+		public DerivationStrategyBase Derivation { get; set; }
+		[JsonProperty]
+		public KeyPathTemplate KeyPathTemplate { get; set; }
+		[JsonConverter(typeof(StringEnumConverter))]
+		public DerivationFeature Feature { get; set; }
 	}
 }
