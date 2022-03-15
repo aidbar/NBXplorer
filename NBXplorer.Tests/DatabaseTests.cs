@@ -52,6 +52,7 @@ namespace NBXplorer.Tests
 			await Benchmark(conn, "SELECT o.tx_id, o.idx, o.value, o.script FROM (VALUES ('BTC', 'hash', 5), ('BTC', 'hash', 5), ('BTC', 'hash', 5))  r (code, tx_id, idx) JOIN outs o USING (code, tx_id, idx);", 50);
 			await Benchmark(conn, "SELECT height, tx_id, wu.idx, value, script, get_keypath(d.metadata, ds.idx) AS keypath, d.metadata->>'feature' feature, mempool, spent_mempool, seen_at FROM wallets_utxos wu JOIN descriptors_scripts ds USING (code, script) JOIN descriptors d USING (code, descriptor) WHERE code='BTC' AND wallet_id='WHALE' AND immature IS FALSE ", 50);
 			await Benchmark(conn, "SELECT * FROM get_wallets_histogram('WHALE', 'BTC', '', '2022-01-01'::timestamptz, '2022-02-01'::timestamptz, interval '1 day');", 50);
+			await Benchmark(conn, "SELECT * FROM get_wallets_recent('WHALE', 100, 0);", 50);
 		}
 
 		private static string GetScript(string script)

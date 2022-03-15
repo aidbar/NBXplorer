@@ -672,9 +672,13 @@ $$  LANGUAGE SQL STABLE;
 -- Useful view to see what has going on recently in a wallet. Doesn't depends on wallets_history.
 CREATE OR REPLACE FUNCTION get_wallets_recent(in_wallet_id TEXT, in_limit INT, in_offset INT)
 RETURNS TABLE(wallet_id TEXT, code TEXT, asset_id TEXT, tx_id TEXT, seen_at TIMESTAMPTZ, balance_change BIGINT, balance_total BIGINT) AS $$
+	WITH this_balances AS MATERIALIZED (
+		SELECT unconfirmed_balance FROM wallets_balances
+		WHERE wallet_id=in_wallet_id
+	)
 	SELECT q.wallet_id, q.code, q.asset_id, q.tx_id, q.seen_at, q.balance_change, COALESCE((q.latest_balance - LAG(balance_change_sum, 1) OVER (ORDER BY seen_at DESC)), q.latest_balance) balance_total FROM
 		(SELECT q.*, 
-				COALESCE((SELECT unconfirmed_balance FROM wallets_balances WHERE wallet_id=q.wallet_id AND code=q.code AND asset_id=q.asset_id), 0) latest_balance,
+				COALESCE((SELECT unconfirmed_balance FROM this_balances WHERE code=q.code AND asset_id=q.asset_id), 0) latest_balance,
 				SUM(q.balance_change) OVER (ORDER BY seen_at DESC) balance_change_sum FROM 
 			(SELECT q.wallet_id,
 				   io.code,
