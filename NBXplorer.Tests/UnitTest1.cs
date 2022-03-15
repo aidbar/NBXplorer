@@ -2621,10 +2621,12 @@ namespace NBXplorer.Tests
 			}
 		}
 
-		[Fact]
-		public void CanRescan()
+		[Theory]
+		[InlineData(Backend.DBTrie)]
+		[InlineData(Backend.Postgres)]
+		public void CanRescan(Backend backend)
 		{
-			using (var tester = ServerTester.Create())
+			using (var tester = ServerTester.Create(backend))
 			{
 				tester.Client.WaitServerStarted(Timeout);
 				var key = new BitcoinExtKey(new ExtKey(), tester.Network);

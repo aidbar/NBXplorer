@@ -19,6 +19,7 @@ using System.Text;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Converters;
 using Newtonsoft.Json.Linq;
+using NBitcoin.Crypto;
 
 namespace NBXplorer
 {
@@ -156,16 +157,29 @@ namespace NBXplorer
 		public record DescriptorKey(string code, string descriptor);
 		DescriptorKey GetDescriptorKey(DerivationStrategyBase strategy, DerivationFeature derivationFeature)
 		{
-			return new DescriptorKey(Network.CryptoCode, strategy.ToString() + "|" + derivationFeature);
+			var hash = Encoders.Hex.EncodeData(Hashes.RIPEMD160(new UTF8Encoding(false).GetBytes($"{Network.CryptoCode}|{strategy}|{derivationFeature}")));
+			return new DescriptorKey(Network.CryptoCode, hash);
 		}
-		public record WalletKey(string wid);
+		// metadata isn't really part of the key, but it's handy to have it here when we do INSERT INTO wallets.
+		public record WalletKey(string wid, string metadata);
 		WalletKey GetWalletKey(DerivationStrategyBase strategy)
 		{
-			return new WalletKey(Network.CryptoCode + "|" + strategy.ToString());
+			var hash = Encoders.Hex.EncodeData(Hashes.RIPEMD160(new UTF8Encoding(false).GetBytes($"{Network.CryptoCode}|{strategy}")));
+			JObject m = new JObject();
+			m.Add(new JProperty("type", new JValue("NBXv1-Derivation")));
+			m.Add(new JProperty("code", new JValue(Network.CryptoCode)));
+			m.Add(new JProperty("derivation", new JValue(strategy.ToString())));
+			return new WalletKey(hash, m.ToString(Formatting.None));
 		}
 		WalletKey GetWalletKey(IDestination destination)
 		{
-			return new WalletKey(Network.CryptoCode + "|" + destination.ScriptPubKey.GetDestinationAddress(Network.NBitcoinNetwork));
+			var address = destination.ScriptPubKey.GetDestinationAddress(Network.NBitcoinNetwork);
+			var hash = Encoders.Hex.EncodeData(Hashes.RIPEMD160(new UTF8Encoding(false).GetBytes(Network.CryptoCode + "|" + address.ToString())));
+			JObject m = new JObject();
+			m.Add(new JProperty("type", new JValue("NBXv1-Address")));
+			m.Add(new JProperty("code", new JValue(Network.CryptoCode)));
+			m.Add(new JProperty("address", new JValue(address.ToString())));
+			return new WalletKey(hash, m.ToString(Formatting.None));
 		}
 		internal WalletKey GetWalletKey(TrackedSource source)
 		{
@@ -204,7 +218,7 @@ namespace NBXplorer
 			var row = await connection.ExecuteScalarAsync<int?>("SELECT next_idx FROM descriptors WHERE code=@code AND descriptor=@descriptor", descriptorKey);
 			if (row is null)
 			{
-				await connection.ExecuteAsync("INSERT INTO wallets VALUES (@wid) ON CONFLICT DO NOTHING", walletKey);
+				await connection.ExecuteAsync("INSERT INTO wallets VALUES (@wid, @metadata::JSONB) ON CONFLICT DO NOTHING", walletKey);
 				await connection.ExecuteAsync("INSERT INTO descriptors VALUES (@code, @descriptor, @metadata::JSONB) ON CONFLICT DO NOTHING;", new
 				{
 					descriptorKey.code,
@@ -796,7 +810,7 @@ namespace NBXplorer
 			var walletKey = GetWalletKey(source);
 			if (!await helper.SetMetadata(walletKey.wid, key, value))
 			{
-				await helper.Connection.ExecuteAsync("INSERT INTO wallets VALUES (@wid) ON CONFLICT DO NOTHING", walletKey);
+				await helper.Connection.ExecuteAsync("INSERT INTO wallets VALUES (@wid, @metadata::JSONB) ON CONFLICT DO NOTHING", walletKey);
 				await helper.SetMetadata(walletKey.wid, key, value);
 			}
 		}
@@ -829,12 +843,12 @@ namespace NBXplorer
 		public async Task Track(IDestination address)
 		{
 			await using var conn = await GetConnection();
-			var walletId = GetWalletKey(address).wid;
+			var walletKey = GetWalletKey(address);
 			await conn.Connection.ExecuteAsync(
-				"INSERT INTO wallets VALUES (@walletId) ON CONFLICT DO NOTHING;" +
+				"INSERT INTO wallets VALUES (@wid, @metadata::JSONB) ON CONFLICT DO NOTHING;" +
 				"INSERT INTO scripts VALUES (@code, @script, @addr) ON CONFLICT DO NOTHING;" +
-				"INSERT INTO wallets_scripts VALUES (@code, @script, @walletId) ON CONFLICT DO NOTHING"
-				, new { code = Network.CryptoCode, script = address.ScriptPubKey.ToHex(), addr = address.ScriptPubKey.GetDestinationAddress(Network.NBitcoinNetwork).ToString(), walletId });
+				"INSERT INTO wallets_scripts VALUES (@code, @script, @wid) ON CONFLICT DO NOTHING"
+				, new { code = Network.CryptoCode, script = address.ScriptPubKey.ToHex(), addr = address.ScriptPubKey.GetDestinationAddress(Network.NBitcoinNetwork).ToString(), walletKey.wid, walletKey.metadata });
 		}
 
 		public async ValueTask<int> TrimmingEvents(int maxEvents, CancellationToken cancellationToken = default)
@@ -909,7 +923,7 @@ namespace NBXplorer
 
 	public class LegacyDescriptorMetadata
 	{
-		public const string TypeName = "LegacyDescriptorMetadata";
+		public const string TypeName = "NBXv1-Derivation";
 		[JsonProperty]
 		public string Type { get; set; }
 		[JsonProperty]
