@@ -39,7 +39,7 @@ namespace NBXplorer.Tests
 			Logs.WriteLine("Data loaded");
 			await Benchmark(conn, "SELECT * FROM wallets_utxos;", 50);
 			// Turn block unconf then back to conf
-			await Benchmark(conn, "UPDATE blks SET confirmed='f' WHERE code='BTC' AND blk_id='c94d3162fbdd6773c490e50afd813c9eae06644fdd158c89c03a34ba5f7aacea';UPDATE blks SET confirmed='t' WHERE code='BTC' AND blk_id='c94d3162fbdd6773c490e50afd813c9eae06644fdd158c89c03a34ba5f7aacea';", 50);
+			await Benchmark(conn, "UPDATE blks SET confirmed='f' WHERE code='BTC' AND blk_id='34d73e472c45c8f47e505230f9935a7ff6450e3556285787ffcc935a22e31637';UPDATE blks SET confirmed='t' WHERE code='BTC' AND blk_id='34d73e472c45c8f47e505230f9935a7ff6450e3556285787ffcc935a22e31637';", 50);
 			await Benchmark(conn,
 				"SELECT ts.script, ts.addr, ts.derivation, ts.keypath, ts.redeem FROM ( VALUES ('BTC', 'blah'), ('BTC', 'blah'), ('BTC', 'blah'), ('BTC', 'blah')) r (code, script), " +
 				" LATERAL(" +
