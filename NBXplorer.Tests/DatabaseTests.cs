@@ -43,14 +43,14 @@ namespace NBXplorer.Tests
 			await Benchmark(conn,
 				"SELECT ts.script, ts.addr, ts.derivation, ts.keypath, ts.redeem FROM ( VALUES ('BTC', 'blah'), ('BTC', 'blah'), ('BTC', 'blah'), ('BTC', 'blah')) r (code, script), " +
 				" LATERAL(" +
-				"	SELECT ws.script, s.addr, d.metadata->>'derivation' derivation, get_keypath(d.metadata, ds.idx) keypath, ds.metadata->>'redeem' redeem  " +
+				"	SELECT ws.script, s.addr, d.metadata->>'derivation' derivation, nbxv1_get_keypath(d.metadata, ds.idx) keypath, ds.metadata->>'redeem' redeem  " +
 				"	FROM wallets_scripts ws " +
 				"	LEFT JOIN descriptors_scripts ds USING (code, descriptor, idx) " +
 				"   LEFT JOIN descriptors d USING (code, descriptor) " +
 				"	JOIN scripts s ON s.code=ws.code AND s.script=ws.script " +
 				"   WHERE ws.code=r.code AND ws.script=r.script) ts;", 50);
 			await Benchmark(conn, "SELECT o.tx_id, o.idx, o.value, o.script FROM (VALUES ('BTC', 'hash', 5), ('BTC', 'hash', 5), ('BTC', 'hash', 5))  r (code, tx_id, idx) JOIN outs o USING (code, tx_id, idx);", 50);
-			await Benchmark(conn, "SELECT blk_height, tx_id, wu.idx, value, script, get_keypath(d.metadata, ds.idx) AS keypath, d.metadata->>'feature' feature, mempool, spent_mempool, seen_at FROM wallets_utxos wu JOIN descriptors_scripts ds USING (code, script) JOIN descriptors d USING (code, descriptor) WHERE code='BTC' AND wallet_id='WHALE' AND immature IS FALSE ", 50);
+			await Benchmark(conn, "SELECT blk_height, tx_id, wu.idx, value, script, nbxv1_get_keypath(d.metadata, ds.idx) AS keypath, d.metadata->>'feature' feature, mempool, spent_mempool, seen_at FROM wallets_utxos wu JOIN descriptors_scripts ds USING (code, script) JOIN descriptors d USING (code, descriptor) WHERE code='BTC' AND wallet_id='WHALE' AND immature IS FALSE ", 50);
 			await Benchmark(conn, "SELECT * FROM get_wallets_histogram('WHALE', 'BTC', '', '2022-01-01'::timestamptz, '2022-02-01'::timestamptz, interval '1 day');", 50);
 			await Benchmark(conn, "SELECT * FROM get_wallets_recent('WHALE', 100, 0);", 50);
 		}
@@ -638,6 +638,9 @@ namespace NBXplorer.Tests
 		private async Task<DbConnection> GetConnection(string dbName = null, [CallerMemberName] string applicationName = null)
 		{
 			var connectionString = ServerTester.GetTestPostgres(dbName, applicationName);
+			Npgsql.NpgsqlConnectionStringBuilder builder = new Npgsql.NpgsqlConnectionStringBuilder(connectionString);
+			builder.Pooling = false;
+			connectionString = builder.ToString();
 			var conf = new ConfigurationBuilder().AddInMemoryCollection(new[] { new KeyValuePair<string, string>("POSTGRES", connectionString) }).Build();
 			var container = new ServiceCollection();
 			container.AddSingleton<IConfiguration>(conf);

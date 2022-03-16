@@ -91,7 +91,7 @@ namespace NBXplorer.Controllers
 			await using var conn = await ConnectionFactory.CreateConnection();
 			var height = await conn.ExecuteScalarAsync<long>("SELECT height FROM get_tip(@code)", new { code = network.CryptoCode });
 			string join = derivationScheme is null ? string.Empty : " JOIN descriptors_scripts ds USING (code, script) JOIN descriptors d USING (code, descriptor)";
-			string column = derivationScheme is null ? "NULL as keypath, NULL as feature" : "get_keypath(d.metadata, ds.idx) AS keypath, d.metadata->>'feature' feature";
+			string column = derivationScheme is null ? "NULL as keypath, NULL as feature" : "nbxv1_get_keypath(d.metadata, ds.idx) AS keypath, d.metadata->>'feature' feature";
 			var utxos = (await conn.QueryAsync<(
 				long? blk_height,
 				string tx_id,

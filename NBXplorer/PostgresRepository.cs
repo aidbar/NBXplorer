@@ -69,6 +69,16 @@ namespace NBXplorer
 					_Repositories.Add(net.CryptoCode, repo);
 				}
 			}
+			foreach (var repo in _Repositories.Select(kv => kv.Value))
+			{
+				if (GetChainSetting(repo.Network) is ChainConfiguration chainConf &&
+				chainConf.Rescan &&
+				(chainConf.RescanIfTimeBefore is null || chainConf.RescanIfTimeBefore.Value >= DateTimeOffset.UtcNow))
+				{
+					Logs.Configuration.LogInformation($"{repo.Network.CryptoCode}: Rescanning the chain...");
+					await repo.SetIndexProgress(null);
+				}
+			}
 			if (_Configuration.TrimEvents > 0)
 			{
 				Logs.Explorer.LogInformation("Trimming the event table if needed...");
@@ -271,7 +281,7 @@ namespace NBXplorer
 			var limitClause = string.Empty;
 			if (limit is int i && i > 0)
 				limitClause = $" LIMIT {i}";
-			var res = (await connection.QueryAsync<(long id, string data)>($"SELECT id, data FROM evts WHERE code=@code AND id > @lastEventId ORDER BY id{limitClause}", new { code = Network.CryptoCode, lastEventId }))
+			var res = (await connection.QueryAsync<(long id, string data)>($"SELECT id, data FROM nbxv1_evts WHERE code=@code AND id > @lastEventId ORDER BY id{limitClause}", new { code = Network.CryptoCode, lastEventId }))
 				.Select(ToTypedEvent)
 				.ToArray();
 			return res;
@@ -290,25 +300,11 @@ namespace NBXplorer
 			var limitClause = string.Empty;
 			if (limit is int i && i > 0)
 				limitClause = $" LIMIT {i}";
-			var res = (await connection.QueryAsync<(long id, string data)>($"SELECT id, data FROM evts WHERE code=@code ORDER BY id DESC{limitClause}", new { code = Network.CryptoCode }))
+			var res = (await connection.QueryAsync<(long id, string data)>($"SELECT id, data FROM nbxv1_evts WHERE code=@code ORDER BY id DESC{limitClause}", new { code = Network.CryptoCode }))
 				.Select(ToTypedEvent)
 				.ToArray();
 			Array.Reverse(res);
 			return res;
-		}
-
-		public async Task<BlockLocator> GetIndexProgress()
-		{
-			// TODO: WE SHOULD NOT RELY ON THE BLKS TABLE FOR STORING THE INDEX PROGRESS
-			await using var connection = await connectionFactory.CreateConnection();
-			var blocks = (await connection.QueryAsync<string>("SELECT blk_id FROM blks WHERE code=@code AND confirmed='t' ORDER BY height DESC LIMIT 1000;", new { code = Network.CryptoCode }))
-				.Select(b => uint256.Parse(b))
-				.ToArray();
-			if (blocks.Length is 0)
-				return null;
-			var locators = new BlockLocator();
-			locators.Blocks = new List<uint256>(blocks);
-			return locators;
 		}
 
 		public async Task<MultiValueDictionary<Script, KeyPathInformation>> GetKeyInformations(IList<Script> scripts)
@@ -336,7 +332,7 @@ namespace NBXplorer
 				return result;
 			builder.Append(") r (code, script)," +
 				" LATERAL (" +
-				"	SELECT ws.script, s.addr, d.metadata->>'derivation' derivation, get_keypath(d.metadata, ds.idx) keypath, ds.metadata->>'redeem' redeem " +
+				"	SELECT ws.script, s.addr, d.metadata->>'derivation' derivation, nbxv1_get_keypath(d.metadata, ds.idx) keypath, ds.metadata->>'redeem' redeem " +
 				"	FROM wallets_scripts ws " +
 				"	LEFT JOIN descriptors_scripts ds USING (code, descriptor, idx) " +
 				"   LEFT JOIN descriptors d USING (code, descriptor) " +
@@ -446,7 +442,6 @@ namespace NBXplorer
 
 			await using var connection = await connectionFactory.CreateConnectionHelper(Network);
 			await connection.FetchMatches(outs, ins);
-
 			var result = await connection.Connection.QueryMultipleAsync(
 				"SELECT * FROM matched_outs;" +
 				"SELECT * FROM matched_ins");
@@ -542,7 +537,7 @@ namespace NBXplorer
 				return Array.Empty<TrackedTransaction>();
 			var utxos = await
 				connection.Connection.QueryAsync<(string tx_id, long idx, string block_id, bool is_out, string spent_tx_id, long spent_idx, string script, long value, bool immature, string keypath, DateTime seen_at)>(
-				"SELECT io.tx_id, io.idx, io.blk_id, io.is_out, io.spent_tx_id, io.spent_idx, io.script, io.value, io.immature, get_keypath(d.metadata, ds.idx) keypath, io.seen_at " +
+				"SELECT io.tx_id, io.idx, io.blk_id, io.is_out, io.spent_tx_id, io.spent_idx, io.script, io.value, io.immature, nbxv1_get_keypath(d.metadata, ds.idx) keypath, io.seen_at " +
 				"FROM wallets_scripts ws " +
 				"LEFT JOIN descriptors_scripts ds USING (code, descriptor, idx) " +
 				"LEFT JOIN descriptors d USING (code, descriptor) " +
@@ -611,7 +606,7 @@ namespace NBXplorer
 			var key = GetDescriptorKey(strategy, derivationFeature);
 			retry:
 			var unused = await connection.QueryFirstOrDefaultAsync(
-				"SELECT s.script, s.addr, get_keypath(d.metadata , ds.idx) keypath, ds.metadata->>'redeem' redeem FROM descriptors_scripts ds " +
+				"SELECT s.script, s.addr, nbxv1_get_keypath(d.metadata , ds.idx) keypath, ds.metadata->>'redeem' redeem FROM descriptors_scripts ds " +
 				"JOIN scripts s USING (code, script) " +
 				"JOIN descriptors d USING (code, descriptor) " +
 				"WHERE ds.code=@code AND ds.descriptor=@descriptor AND ds.used='f' " +
@@ -768,7 +763,7 @@ namespace NBXplorer
 		{
 			await using var helper = await GetConnection();
 			var json = evt.ToJObject(Serializer.Settings).ToString();
-			var id = helper.Connection.ExecuteScalar<long>("INSERT INTO evts (code, type, data) VALUES (@code, @type, @data::json) RETURNING id", new { code = Network.CryptoCode, type = evt.EventType, data = json });
+			var id = helper.Connection.ExecuteScalar<long>("INSERT INTO nbxv1_evts (code, type, data) VALUES (@code, @type, @data::json) RETURNING id", new { code = Network.CryptoCode, type = evt.EventType, data = json });
 			return id;
 		}
 
@@ -843,10 +838,29 @@ namespace NBXplorer
 			}).ToList();
 		}
 
-		public Task SetIndexProgress(BlockLocator locator)
+		public async Task SetIndexProgress(BlockLocator locator)
 		{
-			// TODO: WE SHOULD NOT RELY ON THE BLKS TABLE FOR STORING THE INDEX PROGRESS
-			return Task.CompletedTask;
+			await using var conn = await connectionFactory.CreateConnection();
+			if (locator is not null)
+			{
+				await conn.ExecuteAsync(
+					"INSERT INTO nbxv1_settings VALUES (@code, 'BlockLocator', @data)" +
+					"ON CONFLICT (code, key) DO UPDATE SET data_bytes=EXCLUDED.data_bytes;", new { code = Network.CryptoCode, data = locator.ToBytes() });
+			}
+			else
+			{
+				await conn.ExecuteAsync("DELETE FROM nbxv1_settings WHERE code=@code AND key='BlockLocator';", new { code = Network.CryptoCode });
+			}
+		}
+		public async Task<BlockLocator> GetIndexProgress()
+		{
+			await using var connection = await connectionFactory.CreateConnection();
+			var data = await connection.QueryFirstOrDefaultAsync<byte[]>("SELECT data_bytes FROM nbxv1_settings WHERE code=@code AND key='BlockLocator'", new { code = Network.CryptoCode });
+			if (data is null)
+				return null;
+			var locator = new BlockLocator();
+			locator.ReadWrite(data, Network.NBitcoinNetwork);
+			return locator;
 		}
 
 		public async Task Track(IDestination address)
@@ -863,9 +877,9 @@ namespace NBXplorer
 		public async ValueTask<int> TrimmingEvents(int maxEvents, CancellationToken cancellationToken = default)
 		{
 			await using var conn = await GetConnection();
-			var id = conn.Connection.ExecuteScalar<long?>("SELECT id FROM evts WHERE code=@code ORDER BY id DESC OFFSET @maxEvents LIMIT 1", new { code = Network.CryptoCode, maxEvents = maxEvents - 1 });
+			var id = conn.Connection.ExecuteScalar<long?>("SELECT id FROM nbxv1_evts WHERE code=@code ORDER BY id DESC OFFSET @maxEvents LIMIT 1", new { code = Network.CryptoCode, maxEvents = maxEvents - 1 });
 			if (id is long i)
-				return await conn.Connection.ExecuteAsync("DELETE FROM evts WHERE code=@code AND id < @id", new { code = Network.CryptoCode, id = i });
+				return await conn.Connection.ExecuteAsync("DELETE FROM nbxv1_evts WHERE code=@code AND id < @id", new { code = Network.CryptoCode, id = i });
 			return 0;
 		}
 
