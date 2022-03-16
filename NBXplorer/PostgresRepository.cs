@@ -403,13 +403,19 @@ namespace NBXplorer
 			var outpointCount = inputCount + outputCount;
 
 			var scripts = new List<Script>(outpointCount);
-			var transactionsPerOutpoint = new MultiValueDictionary<OutPoint, NBitcoin.Transaction>(inputCount);
 			var transactionsPerScript = new MultiValueDictionary<Script, NBitcoin.Transaction>(outpointCount);
 
 			var matches = new Dictionary<string, TrackedTransaction>();
-			var noMatchTransactions = new HashSet<uint256>(txs.Count);
+			var noMatchTransactions = slimBlock?.Hash is null ? new HashSet<uint256>(txs.Count) : null;
 			var transactions = new Dictionary<uint256, NBitcoin.Transaction>(txs.Count);
 			var outpoints = new List<OutPoint>(inputCount);
+
+
+			var outCount = txs.Select(t => t.Outputs.Count).Sum();
+			List<DbConnectionHelper.NewOut> outs = new List<DbConnectionHelper.NewOut>(outCount);
+			var inCount = txs.Select(t => t.Inputs.Count).Sum();
+			List<DbConnectionHelper.NewIn> ins = new List<DbConnectionHelper.NewIn>(inCount);
+
 			foreach (var tx in txs)
 			{
 				if (!transactions.TryAdd(tx.GetHash(), tx))
@@ -418,102 +424,88 @@ namespace NBXplorer
 				{
 					continue;
 				}
-				noMatchTransactions.Add(tx.GetHash());
+				noMatchTransactions?.Add(tx.GetHash());
 				if (!tx.IsCoinBase)
 				{
+					int i = 0;
 					foreach (var input in tx.Inputs)
 					{
-						transactionsPerOutpoint.Add(input.PrevOut, tx);
-						if (transactions.TryGetValue(input.PrevOut.Hash, out var prevtx))
-						{
-							// Maybe this tx is spending another tx in the same block, in which case, it will not be fetched by GetOutPointToTxOut,
-							// so we need to add it here.
-							var txout = prevtx.Outputs[input.PrevOut.N];
-							scripts.Add(txout.ScriptPubKey);
-							transactionsPerScript.Add(txout.ScriptPubKey, tx);
-						}
-						else
-						{
-							// Else, let's try to fetch it later.
-							outpoints.Add(input.PrevOut);
-						}
+						ins.Add(new DbConnectionHelper.NewIn(tx.GetHash(), i, input.PrevOut.Hash, (int)input.PrevOut.N));
+						i++;
 					}
 				}
+				int io = -1;
 				foreach (var output in tx.Outputs)
 				{
+					io++;
 					if (MinUtxoValue != null && output.Value < MinUtxoValue)
 						continue;
-					scripts.Add(output.ScriptPubKey);
-					transactionsPerScript.Add(output.ScriptPubKey, tx);
+					outs.Add(new DbConnectionHelper.NewOut(tx.GetHash(), io, output.ScriptPubKey, output.Value)); 
 				}
 			}
 
 			await using var connection = await connectionFactory.CreateConnectionHelper(Network);
+			await connection.FetchMatches(outs, ins);
 
+			var result = await connection.Connection.QueryMultipleAsync(
+				"SELECT * FROM matched_outs;" +
+				"SELECT * FROM matched_ins");
+			var matchedOuts = await result.ReadAsync();
+			var matchedIns = await result.ReadAsync();
 
-			foreach (var kv in await connection.GetOutputs(outpoints))
+			foreach (var r in matchedOuts)
 			{
-				if (kv.Value is null)
-					continue;
-				scripts.Add(kv.Value.ScriptPubKey);
-				foreach (var tx in transactionsPerOutpoint[kv.Key])
-				{
-					transactionsPerScript.Add(kv.Value.ScriptPubKey, tx);
-				}
+				var s = Script.FromHex(r.script);
+				scripts.Add(s);
+				transactionsPerScript.Add(s, transactions[uint256.Parse(r.tx_id)]);
 			}
-			if (scripts.Count == 0)
-				return Array.Empty<TrackedTransaction>();
-			var keyPathInformationsByTrackedTransaction = new MultiValueDictionary<TrackedTransaction, KeyPathInformation>();
-			var keyInformations = await GetKeyInformations(connection.Connection, scripts);
-			foreach (var keyInfoByScripts in keyInformations)
+			foreach (var r in matchedIns)
 			{
-				foreach (var tx in transactionsPerScript[keyInfoByScripts.Key])
+				var s = Script.FromHex(r.script);
+				scripts.Add(s);
+				transactionsPerScript.Add(s, transactions[uint256.Parse(r.tx_id)]);
+			}
+			if (scripts.Count > 0)
+			{
+				var keyInformations = await GetKeyInformations(connection.Connection, scripts);
+				foreach (var keyInfoByScripts in keyInformations)
 				{
-					if (keyInfoByScripts.Value.Count != 0)
-						noMatchTransactions.Remove(tx.GetHash());
-					foreach (var keyInfo in keyInfoByScripts.Value)
+					foreach (var tx in transactionsPerScript[keyInfoByScripts.Key])
 					{
-						var matchesGroupingKey = $"{keyInfo.DerivationStrategy?.ToString() ?? keyInfo.ScriptPubKey.ToHex()}-[{tx.GetHash()}]";
-						if (!matches.TryGetValue(matchesGroupingKey, out TrackedTransaction match))
+						if (keyInfoByScripts.Value.Count != 0)
+							noMatchTransactions?.Remove(tx.GetHash());
+						foreach (var keyInfo in keyInfoByScripts.Value)
 						{
-							match = CreateTrackedTransaction(keyInfo.TrackedSource,
-								new TrackedTransactionKey(tx.GetHash(), slimBlock?.Hash, false),
-								tx,
-								new Dictionary<Script, KeyPath>());
-							match.BlockHeight = slimBlock?.Height;
-							match.FirstSeen = now;
-							match.Inserted = now;
-							matches.Add(matchesGroupingKey, match);
+							var matchesGroupingKey = $"{keyInfo.DerivationStrategy?.ToString() ?? keyInfo.ScriptPubKey.ToHex()}-[{tx.GetHash()}]";
+							if (!matches.TryGetValue(matchesGroupingKey, out TrackedTransaction match))
+							{
+								match = CreateTrackedTransaction(keyInfo.TrackedSource,
+									new TrackedTransactionKey(tx.GetHash(), slimBlock?.Hash, false),
+									tx,
+									new Dictionary<Script, KeyPath>());
+								match.BlockHeight = slimBlock?.Height;
+								match.FirstSeen = now;
+								match.Inserted = now;
+								matches.Add(matchesGroupingKey, match);
+							}
+							if (keyInfo.KeyPath != null)
+								match.KnownKeyPathMapping.TryAdd(keyInfo.ScriptPubKey, keyInfo.KeyPath);
 						}
-						if (keyInfo.KeyPath != null)
-							match.KnownKeyPathMapping.TryAdd(keyInfo.ScriptPubKey, keyInfo.KeyPath);
-						keyPathInformationsByTrackedTransaction.Add(match, keyInfo);
 					}
 				}
-			}
-			foreach (var m in matches.Values)
-			{
-				m.KnownKeyPathMappingUpdated();
-			}
-
-			foreach (var tx in txs)
-			{
-				if (slimBlock?.Hash == null &&
-					noMatchTransactions.Contains(tx.GetHash()))
+				foreach (var m in matches.Values)
 				{
-					noMatchCache.Add(tx.GetHash());
+					m.KnownKeyPathMappingUpdated();
+				}
+			}
+			if (noMatchTransactions != null)
+			{
+				foreach (var txId in noMatchTransactions)
+				{
+					noMatchCache.Add(txId);
 				}
 			}
 			return matches.Values.Count == 0 ? Array.Empty<TrackedTransaction>() : matches.Values.ToArray();
-		}
-
-		private TrackedSource GetTrackedSource(string wallet_id)
-		{
-			var legacyHeader = $"Legacy({Network.CryptoCode}):";
-			var legacyScheme = wallet_id;
-			if (wallet_id.StartsWith(legacyHeader, StringComparison.OrdinalIgnoreCase))
-				legacyScheme = wallet_id.Substring(legacyHeader.Length);
-			return TrackedSource.Parse(legacyScheme, Network);
 		}
 
 		public Task<TrackedTransaction[]> GetMatches(Transaction tx, SlimChainedBlock slimBlock, DateTimeOffset now, bool useCache)

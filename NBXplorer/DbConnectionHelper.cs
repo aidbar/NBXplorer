@@ -53,7 +53,9 @@ namespace NBXplorer
 			newOuts ??= Array.Empty<NewOut>();
 			newIns ??= Array.Empty<NewIn>();
 			int i = 0;
-			StringBuilder cmd = new StringBuilder();
+			newOuts.TryGetNonEnumeratedCount(out int outCount);
+			newIns.TryGetNonEnumeratedCount(out int inCount);
+			StringBuilder cmd = new StringBuilder(32 + 12 + outCount * 140 + inCount * 145 + 20);
 			cmd.Append("CALL fetch_matches(@code, ");
 			cmd.Append("ARRAY[");
 			foreach (var o in newOuts)
