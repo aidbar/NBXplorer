@@ -50,7 +50,7 @@ namespace NBXplorer.Tests
 				"	JOIN scripts s ON s.code=ws.code AND s.script=ws.script " +
 				"   WHERE ws.code=r.code AND ws.script=r.script) ts;", 50);
 			await Benchmark(conn, "SELECT o.tx_id, o.idx, o.value, o.script FROM (VALUES ('BTC', 'hash', 5), ('BTC', 'hash', 5), ('BTC', 'hash', 5))  r (code, tx_id, idx) JOIN outs o USING (code, tx_id, idx);", 50);
-			await Benchmark(conn, "SELECT height, tx_id, wu.idx, value, script, get_keypath(d.metadata, ds.idx) AS keypath, d.metadata->>'feature' feature, mempool, spent_mempool, seen_at FROM wallets_utxos wu JOIN descriptors_scripts ds USING (code, script) JOIN descriptors d USING (code, descriptor) WHERE code='BTC' AND wallet_id='WHALE' AND immature IS FALSE ", 50);
+			await Benchmark(conn, "SELECT blk_height, tx_id, wu.idx, value, script, get_keypath(d.metadata, ds.idx) AS keypath, d.metadata->>'feature' feature, mempool, spent_mempool, seen_at FROM wallets_utxos wu JOIN descriptors_scripts ds USING (code, script) JOIN descriptors d USING (code, descriptor) WHERE code='BTC' AND wallet_id='WHALE' AND immature IS FALSE ", 50);
 			await Benchmark(conn, "SELECT * FROM get_wallets_histogram('WHALE', 'BTC', '', '2022-01-01'::timestamptz, '2022-02-01'::timestamptz, interval '1 day');", 50);
 			await Benchmark(conn, "SELECT * FROM get_wallets_recent('WHALE', 100, 0);", 50);
 		}
@@ -135,7 +135,7 @@ namespace NBXplorer.Tests
 					seen_at = date
 				};
 
-				// new_txs should take care of inserting the txs automatically. But we want to be in control of the seen_at.
+				// save_matches should take care of inserting the txs automatically. But we want to be in control of the seen_at.
 				await conn.ExecuteAsync("INSERT INTO txs (code, tx_id, mempool, seen_at) VALUES ('BTC', @tx, 't', @seen_at);", parameters);
 
 				int i = 0;
@@ -160,7 +160,7 @@ namespace NBXplorer.Tests
 				}
 				tx_ins.Append("]::new_in[]");
 				await conn.ExecuteAsync(
-				$"CALL new_txs('BTC', {tx_outs}, {tx_ins});" +
+				$"CALL save_matches('BTC', {tx_outs}, {tx_ins});" +
 				"INSERT INTO blks VALUES ('BTC', @blk, @blkcount, 'f');" +
 				"INSERT INTO blks_txs (code, tx_id, blk_id) VALUES ('BTC', @tx, @blk);" +
 				"UPDATE blks SET confirmed='t' WHERE code='BTC' AND blk_id=@blk;",
@@ -238,11 +238,17 @@ namespace NBXplorer.Tests
 			await conn.ExecuteAsync(
 				"INSERT INTO txs (code, tx_id, mempool) VALUES ('BTC', 't0', 't'), ('BTC', 't1', 't'),  ('BTC', 't2', 't'), ('BTC', 't3', 't'), ('BTC', 't4', 't'), ('BTC', 't5', 't');" +
 				"INSERT INTO scripts VALUES ('BTC', 'a1', '');" +
-				"INSERT INTO outs VALUES ('BTC', 't0', 10, 'a1', 5);" +
-				"INSERT INTO ins VALUES ('BTC', 't1', 0, 't0', 10);" +
-				"INSERT INTO ins VALUES ('BTC', 't2', 0, 't0', 10);"
+				"CALL save_matches ('BTC', " +
+				"ARRAY[('t0', 10, 'a1', 5, '')]::new_out[]," +
+				"ARRAY[('t1', 0, 't0', 10)]::new_in[]);" +
+				"CALL save_matches ('BTC', " +
+				"ARRAY[]::new_out[]," +
+				"ARRAY[('t2', 0, 't0', 10)]::new_in[]);"
 				);
-
+			var conflict = await conn.QueryFirstAsync("SELECT * FROM matched_conflicts;");
+			//Assert.Single(conflict);
+			Assert.Equal("t1", conflict.replaced_tx_id);
+			Assert.Equal("t2", conflict.replacing_tx_id);
 			var t1 = await conn.QueryFirstAsync("SELECT * FROM txs WHERE tx_id='t1'");
 			Assert.True(t1.mempool);
 			Assert.Equal("t2", t1.replaced_by);
@@ -251,7 +257,7 @@ namespace NBXplorer.Tests
 			Assert.True(t2.mempool);
 			Assert.Null(t2.replaced_by);
 
-			await conn.ExecuteAsync("INSERT INTO ins VALUES ('BTC', 't3', 0, 't0', 10);");
+			await conn.ExecuteAsync("CALL save_matches ('BTC', ARRAY[]::new_out[], ARRAY[('t3', 0, 't0', 10)]::new_in[]);");
 			t2 = await conn.QueryFirstAsync("SELECT * FROM txs WHERE tx_id='t2'");
 			Assert.True(t2.mempool);
 			Assert.Equal("t3", t2.replaced_by);
@@ -259,8 +265,8 @@ namespace NBXplorer.Tests
 			// Does it propagate to other children? t3 get spent by t4 then t3 get double spent by t5.
 			// We expect t3 and t4 to be double spent
 			await conn.ExecuteAsync("INSERT INTO outs VALUES('BTC', 't3', 10, 'a1', 5);" +
-				"INSERT INTO ins VALUES ('BTC', 't4', 0, 't3', 10);" +
-				"INSERT INTO ins VALUES ('BTC', 't5', 0, 't0', 10);");
+				"CALL save_matches ('BTC', ARRAY[]::new_out[], ARRAY[('t4', 0, 't3', 10)]::new_in[]);" +
+				"CALL save_matches ('BTC', ARRAY[]::new_out[], ARRAY[('t5', 0, 't0', 10)]::new_in[]);");
 
 			var t3 = await conn.QueryFirstAsync("SELECT * FROM txs WHERE tx_id='t3'");
 			Assert.True(t3.mempool);
@@ -276,6 +282,35 @@ namespace NBXplorer.Tests
 		}
 
 		[Fact]
+		public async Task CanGetMatches()
+		{
+			await using var conn = await GetConnection();
+			await conn.ExecuteAsync("INSERT INTO scripts VALUES ('BTC', 'a1', '');");
+			await conn.ExecuteAsync("CALL fetch_matches ('BTC', ARRAY[" +
+				"('t1', 0, 'a1', 5,'')," +
+				"('t1', 0, 'a1', 7,'')," + // dup
+				"('t1', 1, 'a3', 6,'')," +  // shouldn't be tracked
+				"('t1', 1, 'a1', 6,'')" +
+				"]::new_out[]," +
+				"ARRAY[" +
+				"('t2', 0, 't1', 0)," +
+				"('t2', 1, 't2', 0)," + // shouldn't be tracked
+				"('t2', 0, 't1', 0)" +  // dup
+				"]::new_in[])");
+
+			var result = (await conn.QueryAsync("SELECT * FROM matched_outs")).ToList();
+			Assert.Equal(2, result.Count);
+			Assert.Contains(result, o => o.tx_id == "t1" && o.idx == 0 && o.order == 0);
+			Assert.Contains(result, o => o.tx_id == "t1" && o.idx == 1 && o.order == 3);
+
+			result = (await conn.QueryAsync("SELECT * FROM matched_ins")).ToList();
+			var row = Assert.Single(result);
+			Assert.Equal("t2", row.tx_id);
+			Assert.Equal(0, row.idx);
+			Assert.Equal(0, row.order);
+		}
+
+			[Fact]
 		public async Task CanTrackGap()
 		{
 			await using var conn = await GetConnection();
@@ -322,7 +357,7 @@ namespace NBXplorer.Tests
 				"INSERT INTO wallets VALUES ('Alice');" +
 				"INSERT INTO scripts VALUES ('BTC', 'a1', '');" +
 				"INSERT INTO wallets_scripts VALUES ('BTC', 'a1', 'Alice');" +
-				"CALL new_txs('BTC', ARRAY[('t1', 10, 'a1', 5, '')]::new_out[], ARRAY[]::new_in[]);");
+				"CALL save_matches('BTC', ARRAY[('t1', 10, 'a1', 5, '')]::new_out[], ARRAY[]::new_in[]);");
 			Assert.Single(await conn.QueryAsync("SELECT * FROM wallets_utxos WHERE wallet_id='Alice'"));
 
 			await conn.ExecuteAsync(
@@ -355,7 +390,7 @@ namespace NBXplorer.Tests
 			Assert.Equal(5, balance.available_balance);
 
 			await conn.ExecuteAsync(
-				"CALL new_txs('BTC', ARRAY[]::new_out[], ARRAY[('t2', 0, 't1', 10)]::new_in[]);");
+				"CALL save_matches('BTC', ARRAY[]::new_out[], ARRAY[('t2', 0, 't1', 10)]::new_in[]);");
 
 			balance = conn.QuerySingle("SELECT * FROM wallets_balances WHERE wallet_id='Alice';");
 			Assert.Equal(5, balance.confirmed_balance);
@@ -394,16 +429,11 @@ namespace NBXplorer.Tests
 			// So t2 and t3 should get out of mempool.
 			await conn.ExecuteAsync(
 				"INSERT INTO scripts VALUES ('BTC', 'script', '');" +
-				"CALL new_txs('BTC'," +
-				"ARRAY[" +
-				"('t1', 0, 'script', 5, '')," +
-				"('t2', 0, 'script', 5, '')" +
-				"]::new_out[]," +
-				"ARRAY[" +
-				"('t2', 0, 't1', 0)," +
-				"('t3', 0, 't2', 0)," +
-				"('t4', 0, 't1', 0)" +
-				"]::new_in[]);" +
+				"CALL save_matches('BTC', ARRAY[('t1', 0, 'script', 5, '')]::new_out[], ARRAY[]::new_in[]);" +
+				"CALL save_matches('BTC', ARRAY[('t2', 0, 'script', 5, '')]::new_out[], ARRAY[('t2', 0, 't1', 0)]::new_in[]);" +
+				"CALL save_matches('BTC', ARRAY[]::new_out[], ARRAY[('t3', 0, 't2', 0)]::new_in[]);" +
+				"CALL save_matches('BTC', ARRAY[]::new_out[], ARRAY[('t4', 0, 't1', 0)]::new_in[]);" + // t4 double spend t2
+
 				"INSERT INTO blks (code, blk_id, height, prev_id) VALUES ('BTC', 'b1', 1, 'b0');" +
 				"INSERT INTO blks_txs (code, blk_id, tx_id) VALUES ('BTC', 'b1', 't4'), ('BTC', 'b1', 't1');" +
 				"UPDATE blks SET confirmed='t' WHERE blk_id='b1';");
@@ -425,6 +455,43 @@ namespace NBXplorer.Tests
 			var t4 = await conn.QueryFirstAsync("SELECT * FROM txs WHERE tx_id='t4'");
 			Assert.False(t4.mempool);
 			Assert.Equal("b1", t4.blk_id);
+		}
+
+		[Fact]
+		public async Task CanMempoolPropagate2()
+		{
+			await using var conn = await GetConnection();
+			// t1 get spent by t2 then t2 by t3. But then, t4 double spend t2, but t2 get validated.
+			// So t4 should get out of mempool.
+			await conn.ExecuteAsync(
+				"INSERT INTO scripts VALUES ('BTC', 'script', '');" +
+				"CALL save_matches('BTC', ARRAY[('t1', 0, 'script', 5, '')]::new_out[], ARRAY[]::new_in[]);" +
+				"CALL save_matches('BTC', ARRAY[('t2', 0, 'script', 5, '')]::new_out[], ARRAY[('t2', 0, 't1', 0)]::new_in[]);" +
+				"CALL save_matches('BTC', ARRAY[]::new_out[], ARRAY[('t3', 0, 't2', 0)]::new_in[]);" +
+				"CALL save_matches('BTC', ARRAY[]::new_out[], ARRAY[('t4', 0, 't1', 0)]::new_in[]);" + // t4 double spend t2
+
+				"INSERT INTO blks (code, blk_id, height, prev_id) VALUES ('BTC', 'b1', 1, 'b0');" +
+				"INSERT INTO blks_txs (code, blk_id, tx_id) VALUES ('BTC', 'b1', 't2'), ('BTC', 'b1', 't1');" + // but at the end, t2 get confirmed
+				"UPDATE blks SET confirmed='t' WHERE blk_id='b1';");
+
+			var t3 = await conn.QueryFirstAsync("SELECT * FROM txs WHERE tx_id='t3'");
+			Assert.True(t3.mempool);
+			Assert.Null(t3.blk_id);
+			Assert.Null(t3.replaced_by);
+
+			var t2 = await conn.QueryFirstAsync("SELECT * FROM txs WHERE tx_id='t2'");
+			Assert.False(t2.mempool);
+			Assert.Equal("b1", t2.blk_id);
+			Assert.Null(t2.replaced_by);
+
+			var t1 = await conn.QueryFirstAsync("SELECT * FROM txs WHERE tx_id='t1'");
+			Assert.False(t1.mempool);
+			Assert.Equal("b1", t1.blk_id);
+
+			var t4 = await conn.QueryFirstAsync("SELECT * FROM txs WHERE tx_id='t4'");
+			Assert.False(t4.mempool);
+			Assert.Null(t4.blk_id);
+			Assert.Equal("t2", t4.replaced_by);
 		}
 
 		[Fact]
@@ -451,7 +518,7 @@ namespace NBXplorer.Tests
 
 			// 1 coin to alice, 1 to bob
 			await conn.ExecuteAsync(
-				"CALL new_txs('BTC', ARRAY[" +
+				"CALL save_matches('BTC', ARRAY[" +
 				"('t1', 1, 'alice1', 50, '')," +
 				"('t1', 2, 'bob1', 40, '')" +
 				"]::new_out[], ARRAY[]::new_in[]);" +
@@ -460,7 +527,7 @@ namespace NBXplorer.Tests
 
 			// alice spend her coin, get change back, 2 outputs to bob
 			await conn.ExecuteAsync(
-				"CALL new_txs('BTC', ARRAY[" +
+				"CALL save_matches('BTC', ARRAY[" +
 				"('t2', 0, 'bob2', 20, '')," +
 				"('t2', 1, 'bob3', 39, '')," +
 				"('t2', 2, 'alice2', 1, '')" +
@@ -490,7 +557,7 @@ namespace NBXplorer.Tests
 
 			// Let's test: If the outputs are double spent, then it should disappear from the wallet balance.
 			await conn.ExecuteAsync(
-				"CALL new_txs('BTC', ARRAY[]::new_out[], ARRAY[('ds', 0, 't1', 1)]::new_in[]);" + // This one double spend t2
+				"CALL save_matches('BTC', ARRAY[]::new_out[], ARRAY[('ds', 0, 't1', 1)]::new_in[]);" + // This one double spend t2
 				"INSERT INTO blks VALUES ('BTC', 'bs', 1, 'b0');" +
 				"INSERT INTO blks_txs (code, blk_id, tx_id) VALUES ('BTC', 'bs', 'ds');" +
 				"UPDATE blks SET confirmed='t' WHERE blk_id='bs';");

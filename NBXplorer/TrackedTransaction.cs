@@ -129,6 +129,7 @@ namespace NBXplorer
 		}
 
 		public int? BlockIndex { get; set; }
+		public long? BlockHeight { get; set; }
 
 		public IEnumerable<MatchedOutput> GetReceivedOutputs()
 		{

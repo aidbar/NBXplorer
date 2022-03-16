@@ -93,7 +93,7 @@ namespace NBXplorer.Controllers
 			string join = derivationScheme is null ? string.Empty : " JOIN descriptors_scripts ds USING (code, script) JOIN descriptors d USING (code, descriptor)";
 			string column = derivationScheme is null ? "NULL as keypath, NULL as feature" : "get_keypath(d.metadata, ds.idx) AS keypath, d.metadata->>'feature' feature";
 			var utxos = (await conn.QueryAsync<(
-				long? height,
+				long? blk_height,
 				string tx_id,
 				int idx,
 				long value,
@@ -103,7 +103,7 @@ namespace NBXplorer.Controllers
 				bool mempool,
 				bool spent_mempool,
 				DateTime tx_seen_at)>(
-				$"SELECT height, tx_id, wu.idx, value, script, {column}, mempool, spent_mempool, seen_at " +
+				$"SELECT blk_height, tx_id, wu.idx, value, script, {column}, mempool, spent_mempool, seen_at " +
 				$"FROM wallets_utxos wu {join} WHERE code=@code AND wallet_id=@walletId AND immature IS FALSE", new { code = network.CryptoCode, walletId = repo.GetWalletKey(trackedSource).wid }));
 			UTXOChanges changes = new UTXOChanges()
 			{
@@ -122,9 +122,9 @@ namespace NBXplorer.Controllers
 					TransactionHash = uint256.Parse(utxo.tx_id)
 				};
 				u.Outpoint = new OutPoint(u.TransactionHash, u.Index);
-				if (utxo.height is long)
+				if (utxo.blk_height is long)
 				{
-					u.Confirmations = (int)(height - utxo.height + 1);
+					u.Confirmations = (int)(height - utxo.blk_height + 1);
 				}
 
 				if (utxo.keypath is not null)

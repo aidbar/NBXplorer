@@ -48,77 +48,36 @@ namespace NBXplorer
 		public record NewOut(uint256 txId, int idx, Script script, Money value, string? assetId = null);
 		public record NewIn(uint256 txId, int idx, uint256 spentTxId, int spentIdx);
 
-		public async Task NewTxs(NewOut[]? newOuts, NewIn[]? newIns, DateTimeOffset seenAt)
+		public async Task FetchMatches(IEnumerable<NewOut>? newOuts, IEnumerable<NewIn>? newIns)
 		{
 			newOuts ??= Array.Empty<NewOut>();
 			newIns ??= Array.Empty<NewIn>();
 			int i = 0;
-			StringBuilder tx_outs = new StringBuilder();
-			tx_outs.Append("ARRAY[");
+			StringBuilder cmd = new StringBuilder();
+			cmd.Append("CALL fetch_matches(@code, ");
+			cmd.Append("ARRAY[");
 			foreach (var o in newOuts)
 			{
 				if (i != 0)
-					tx_outs.Append(',');
-				var asset_id = o.assetId is null ? "''" : o.assetId;
-				tx_outs.Append($"('{o.txId}', {o.idx}, {o.script.ToHex()}, {o.value.Satoshi}, {asset_id})");
+					cmd.Append(',');
+				var asset_id = o.assetId ?? String.Empty;
+				cmd.Append($"('{o.txId}', {o.idx}, '{o.script.ToHex()}', {o.value.Satoshi}, '{asset_id}')");
+				i++;
 			}
-			tx_outs.Append("]::new_out[]");
+			cmd.Append("]::new_out[],");
 			i = 0;
-			StringBuilder tx_ins = new StringBuilder();
-			tx_ins.Append("ARRAY[");
+			cmd.Append("ARRAY[");
 			foreach (var ni in newIns)
 			{
 				if (i != 0)
-					tx_ins.Append(',');
-				tx_ins.Append($"('{ni.txId}', {ni.idx}, '{ni.spentTxId}', {ni.spentIdx})");
+					cmd.Append(',');
+				cmd.Append($"('{ni.txId}', {ni.idx}, '{ni.spentTxId}', {ni.spentIdx})");
 				i++;
 			}
-			tx_ins.Append("]::new_in[]");
-			await Connection.ExecuteAsync($"CALL new_txs(@code, {tx_outs}, {tx_ins}, @seen_at)", new { code = Network.CryptoCode, seen_at = seenAt.UtcDateTime });
+			cmd.Append("]::new_in[])");
+			await Connection.ExecuteAsync(cmd.ToString(), new { code = Network.CryptoCode });
 		}
-
-		public async Task InsertIns(IEnumerable<(uint256 inputTxId, int inputIdx, OutPoint spentOutpoint)> ins)
-		{
-			var dbCommand = Connection.CreateCommand();
-			int idx = 0;
-			StringBuilder builder = new StringBuilder();
-			builder.Append("INSERT INTO ins VALUES ");
-			foreach (var i in ins)
-			{
-				if (idx != 0)
-					builder.Append(',');
-				// No injection possible, those are strongly typed
-				builder.Append($"('{Network.CryptoCode}', '{i.inputTxId}', {i.inputIdx}, '{i.spentOutpoint.Hash}', {i.spentOutpoint.N})");
-				idx++;
-			}
-			if (idx == 0)
-				return;
-			builder.Append(" ON CONFLICT DO NOTHING;");
-			dbCommand.CommandText = builder.ToString();
-			await dbCommand.ExecuteNonQueryAsync();
-		}
-
-		public async Task InsertOuts(IEnumerable<(OutPoint outpoint, TxOut output, bool immature)> outs)
-		{
-			var dbCommand = Connection.CreateCommand();
-			int idx = 0;
-			StringBuilder builder = new StringBuilder();
-			builder.Append("INSERT INTO outs (code, tx_id, idx, script, value, immature) VALUES ");
-			foreach (var o in outs)
-			{
-				if (idx != 0)
-					builder.Append(',');
-				var immatureBool = o.immature ? "'t'" : "'f'";
-				builder.Append($"('{Network.CryptoCode}', '{o.outpoint.Hash}', {o.outpoint.N}, '{o.output.ScriptPubKey.ToHex()}', {o.output.Value.Satoshi}, {immatureBool})");
-				idx++;
-			}
-			if (idx == 0)
-				return;
-			builder.Append(" ON CONFLICT DO NOTHING;");
-			dbCommand.CommandText = builder.ToString();
-			await dbCommand.ExecuteNonQueryAsync();
-		}
-		public async Task SaveTransactions(IEnumerable<(Transaction? Transaction, uint256? Id, uint256? BlockId, int? BlockIndex)> transactions, DateTimeOffset? now)
+		public async Task SaveTransactions(IEnumerable<(Transaction? Transaction, uint256? Id, uint256? BlockId, int? BlockIndex, long? BlockHeight, bool immature)> transactions, DateTimeOffset? now)
 		{
 			var parameters = transactions.Select(tx =>
 			new
@@ -129,14 +88,16 @@ namespace NBXplorer
 				raw = tx.Transaction?.ToBytes(),
 				mempool = tx.BlockId is null,
 				seen_at = now is null ? default : now.Value,
-				blk_idx = tx.BlockIndex is int i ? i : 0
+				blk_idx = tx.BlockIndex is int i ? i : 0,
+				blk_height = tx.BlockHeight,
+				immature = tx.immature
 			})
 			.Where(o => o.id is not null)
 			.ToArray();
 			if (now is null)
-				await Connection.ExecuteAsync("INSERT INTO txs VALUES (@code, @id, @raw) ON CONFLICT (code, tx_id) DO UPDATE SET raw = COALESCE(@raw, txs.raw)", parameters);
+				await Connection.ExecuteAsync("INSERT INTO txs VALUES (@code, @id, @raw, @immature) ON CONFLICT (code, tx_id) DO UPDATE SET raw = COALESCE(@raw, txs.raw)", parameters);
 			else
-				await Connection.ExecuteAsync("INSERT INTO txs VALUES (@code, @id, @raw, @blk_id, @blk_idx, @mempool, NULL, @seen_at) ON CONFLICT (code, tx_id) DO UPDATE SET seen_at=LEAST(@seen_at, txs.seen_at), raw = COALESCE(@raw, txs.raw)", parameters);
+				await Connection.ExecuteAsync("INSERT INTO txs VALUES (@code, @id, @raw, @immature, @blk_id, @blk_idx, @blk_height, @mempool, NULL, @seen_at) ON CONFLICT (code, tx_id) DO UPDATE SET seen_at=LEAST(@seen_at, txs.seen_at), raw = COALESCE(@raw, txs.raw)", parameters);
 			await Connection.ExecuteAsync("INSERT INTO blks_txs VALUES (@code, @blk_id, @id, @blk_idx) ON CONFLICT DO NOTHING", parameters.Where(p => p.blk_id is not null).AsList());
 		}
 

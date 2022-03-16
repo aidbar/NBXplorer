@@ -17,7 +17,8 @@
 CREATE TABLE IF NOT EXISTS blks (
   code TEXT NOT NULL,
   blk_id TEXT NOT NULL,
-  height BIGINT, prev_id TEXT NOT NULL,
+  height BIGINT,
+  prev_id TEXT NOT NULL,
   confirmed BOOLEAN DEFAULT 'f',
   indexed_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (code, blk_id));
@@ -40,21 +41,21 @@ BEGIN
 	-- Note that we never set the outputs back to immature, even in reorg
 	-- But that's such a corner case that we don't care.
 	WITH q AS (
-	  SELECT o.code, o.tx_id, o.idx FROM outs o
-	  JOIN txs t USING (code, tx_id)
-	  JOIN blks b ON b.code=o.code AND b.blk_id=t.blk_id
-	  WHERE o.code=NEW.code AND o.immature IS TRUE AND b.height < maturity_height
+	  SELECT t.code, tx_id FROM txs t
+	  JOIN blks b ON b.code=t.code AND b.blk_id=t.blk_id
+	  WHERE t.code=NEW.code AND t.immature IS TRUE AND b.height < maturity_height
 	)
-	UPDATE outs o SET immature='f' 
+	UPDATE txs t SET immature='f' 
 	FROM q
-	WHERE o.code=q.code AND o.tx_id=q.tx_id AND o.idx=q.idx;
+	WHERE t.code=q.code AND t.tx_id=q.tx_id;
 
 	-- Turn mempool flag of confirmed txs to false
 	WITH q AS (
-	SELECT t.code, t.tx_id, bt.blk_id, bt.blk_idx FROM txs t
+	SELECT t.code, t.tx_id, bt.blk_id, bt.blk_idx, b.height FROM txs t
 	JOIN blks_txs bt USING (code, tx_id)
+	JOIN blks b ON b.code=t.code AND b.blk_id=bt.blk_id
 	WHERE t.code=NEW.code AND bt.blk_id=NEW.blk_id)
-	UPDATE txs t SET mempool='f', replaced_by=NULL, blk_id=q.blk_id, blk_idx=q.blk_idx
+	UPDATE txs t SET mempool='f', replaced_by=NULL, blk_id=q.blk_id, blk_idx=q.blk_idx, blk_height=q.height
 	FROM q
 	WHERE t.code=q.code AND t.tx_id=q.tx_id;
 
@@ -82,10 +83,16 @@ BEGIN
 	)
 	-- We can't query over txs.blk_id directly, because it doesn't have an index
 	UPDATE txs t
-	SET mempool='t', blk_id=NULL, blk_idx=NULL
+	SET mempool='t', blk_id=NULL, blk_idx=NULL, blk_height=NULL
 	FROM q
 	WHERE t.code=q.code AND t.tx_id = q.tx_id;
   END IF;
+
+  -- Remove from spent_outs all outputs whose tx isn't in the mempool anymore
+  DELETE FROM spent_outs so
+  WHERE so.code = NEW.code AND NOT so.tx_id=ANY(
+	SELECT tx_id FROM txs
+	WHERE code=NEW.code AND mempool IS TRUE);
 
   RETURN NEW;
 END
@@ -100,8 +107,10 @@ CREATE TABLE IF NOT EXISTS txs (
   tx_id TEXT NOT NULL,
   -- The raw data of transactions isn't really useful aside for book keeping. Indexers can ignore this column and save some space.
   raw BYTEA DEFAULT NULL,
+  immature BOOLEAN DEFAULT 'f',
   blk_id TEXT DEFAULT NULL,
   blk_idx INT DEFAULT NULL,
+  blk_height BIGINT DEFAULT NULL,
   mempool BOOLEAN DEFAULT 't',
   replaced_by TEXT DEFAULT NULL,
   seen_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
@@ -113,19 +122,20 @@ ALTER TABLE txs DROP CONSTRAINT IF EXISTS txs_code_replaced_by_fkey CASCADE;
 ALTER TABLE txs ADD CONSTRAINT txs_code_replaced_by_fkey FOREIGN KEY (code, replaced_by) REFERENCES txs (code, tx_id) ON DELETE SET NULL;
 
 CREATE INDEX IF NOT EXISTS txs_unconf_idx ON txs (code) INCLUDE (tx_id) WHERE mempool IS TRUE;
+CREATE INDEX IF NOT EXISTS txs_code_immature_idx ON txs (code) INCLUDE (tx_id) WHERE immature IS TRUE;
 
 CREATE OR REPLACE FUNCTION txs_denormalize() RETURNS trigger LANGUAGE plpgsql AS $$
 DECLARE
 	r RECORD;
 BEGIN
   -- Propagate any change to table outs, ins, and ins_outs
-	UPDATE outs o SET  blk_id = NEW.blk_id, blk_idx = NEW.blk_idx, mempool = NEW.mempool, replaced_by = NEW.replaced_by, seen_at = NEW.seen_at
+	UPDATE outs o SET  immature=NEW.immature, blk_id = NEW.blk_id, blk_idx = NEW.blk_idx, blk_height = NEW.blk_height, mempool = NEW.mempool, replaced_by = NEW.replaced_by, seen_at = NEW.seen_at
 	WHERE o.code=NEW.code AND o.tx_id=NEW.tx_id;
 
-	UPDATE ins i SET  blk_id = NEW.blk_id, blk_idx = NEW.blk_idx, mempool = NEW.mempool, replaced_by = NEW.replaced_by, seen_at = NEW.seen_at
+	UPDATE ins i SET  blk_id = NEW.blk_id, blk_idx = NEW.blk_idx, blk_height = NEW.blk_height, mempool = NEW.mempool, replaced_by = NEW.replaced_by, seen_at = NEW.seen_at
 	WHERE i.code=NEW.code AND i.input_tx_id=NEW.tx_id;
 
-	UPDATE ins_outs io SET  blk_id = NEW.blk_id, blk_idx = NEW.blk_idx, mempool = NEW.mempool, replaced_by = NEW.replaced_by, seen_at = NEW.seen_at
+	UPDATE ins_outs io SET  immature=NEW.immature, blk_id = NEW.blk_id, blk_idx = NEW.blk_idx, blk_height = NEW.blk_height, mempool = NEW.mempool, replaced_by = NEW.replaced_by, seen_at = NEW.seen_at
 	WHERE io.code=NEW.code AND io.tx_id=NEW.tx_id;
 
 	-- Propagate any replaced_by / mempool to ins/outs/ins_outs and to the children
@@ -139,7 +149,7 @@ BEGIN
 	  END LOOP;
 	END IF;
 
-	IF NEW.mempool != OLD.mempool THEN
+	IF NEW.mempool != OLD.mempool AND (NEW.mempool IS TRUE OR NEW.blk_id IS NULL) THEN
 	  FOR r IN 
 	  	SELECT code, input_tx_id, mempool FROM ins
 		WHERE code=NEW.code AND spent_tx_id=NEW.tx_id AND mempool != NEW.mempool
@@ -179,12 +189,13 @@ CREATE OR REPLACE FUNCTION blks_txs_denormalize() RETURNS trigger LANGUAGE plpgs
 DECLARE
 	r RECORD;
 BEGIN
+	SELECT confirmed, height INTO r FROM blks WHERE code=NEW.code AND blk_id=NEW.blk_id;
 	IF 
-	  (SELECT confirmed FROM blks WHERE code=NEW.code AND blk_id=NEW.blk_id)
+	  r.confirmed IS TRUE
 	THEN
 	  -- Propagate values to txs
 	  UPDATE txs
-	  SET blk_id=NEW.blk_id, blk_idx=NEW.blk_idx, mempool='f', replaced_by=NULL
+	  SET blk_id=NEW.blk_id, blk_idx=NEW.blk_idx, blk_height=r.height, mempool='f', replaced_by=NULL
 	  WHERE code=NEW.code AND tx_id=NEW.tx_id;
 	END IF;
 	RETURN NEW;
@@ -221,13 +232,13 @@ CREATE TABLE IF NOT EXISTS outs (
   idx BIGINT NOT NULL,
   script TEXT NOT NULL,
   value BIGINT NOT NULL,
-  -- Allow multi asset support (Liquid)
   asset_id TEXT NOT NULL DEFAULT '',
-  immature BOOLEAN NOT NULL DEFAULT 'f',
   spent_blk_id TEXT DEFAULT NULL,
   -- Denormalized data which rarely change: Must be same as tx
+  immature BOOLEAN NOT NULL DEFAULT 'f',
   blk_id TEXT DEFAULT NULL,
   blk_idx INT DEFAULT NULL,
+  blk_height BIGINT DEFAULT NULL,
   mempool BOOLEAN DEFAULT 't',
   replaced_by TEXT DEFAULT NULL,
   seen_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
@@ -236,7 +247,6 @@ CREATE TABLE IF NOT EXISTS outs (
   FOREIGN KEY (code, tx_id) REFERENCES txs ON DELETE CASCADE,
   FOREIGN KEY (code, script) REFERENCES scripts ON DELETE CASCADE);
 
-CREATE INDEX IF NOT EXISTS outs_code_immature_idx ON outs (code) INCLUDE (tx_id, idx) WHERE immature IS TRUE;
 CREATE INDEX IF NOT EXISTS outs_unspent_idx ON outs (code) WHERE spent_blk_id IS NULL;
 
 CREATE OR REPLACE FUNCTION outs_denormalize_to_ins_outs() RETURNS trigger LANGUAGE plpgsql AS $$
@@ -257,6 +267,7 @@ BEGIN
 	o.immature,
 	t.blk_id,
 	t.blk_idx,
+	t.blk_height,
 	t.mempool,
 	t.replaced_by,
 	t.seen_at
@@ -279,8 +290,10 @@ DECLARE
   r RECORD;
 BEGIN
   SELECT * INTO r FROM txs WHERE code=NEW.code AND tx_id=NEW.tx_id;
+  NEW.immature = r.immature;
   NEW.blk_id = r.blk_id;
   NEW.blk_idx = r.blk_idx;
+  NEW.blk_height = r.blk_height;
   NEW.mempool = r.mempool;
   NEW.replaced_by = r.replaced_by;
   NEW.seen_at = r.seen_at;
@@ -326,6 +339,7 @@ CREATE TABLE IF NOT EXISTS ins (
   -- Denormalized data which rarely change: Must be same as tx
   blk_id TEXT DEFAULT NULL,
   blk_idx INT DEFAULT NULL,
+  blk_height BIGINT DEFAULT NULL,
   mempool BOOLEAN DEFAULT 't',
   replaced_by TEXT DEFAULT NULL,
   seen_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
@@ -356,6 +370,7 @@ BEGIN
 	NULL,
 	t.blk_id,
 	t.blk_idx,
+	t.blk_height,
 	t.mempool,
 	t.replaced_by,
 	t.seen_at
@@ -369,43 +384,6 @@ CREATE OR REPLACE FUNCTION ins_denormalize_from_txs() RETURNS trigger LANGUAGE p
 DECLARE
   r RECORD;
 BEGIN
-
-  -- This look detect double spend by inserting into the spent_outs
-  -- table and detecting conflicts
-  FOR r IN 
-	  INSERT INTO spent_outs AS so VALUES (NEW.code, NEW.spent_tx_id, NEW.spent_idx, NEW.input_tx_id)
-	  ON CONFLICT (code, tx_id, idx) DO UPDATE SET spent_by=EXCLUDED.spent_by, prev_spent_by=so.spent_by
-	  RETURNING *
-  LOOP
-	  IF r.prev_spent_by IS NOT NULL AND r.prev_spent_by != r.spent_by THEN
-		  -- Make the other tx replaced
-		  UPDATE txs t SET replaced_by=r.spent_by
-		  WHERE t.code=r.code AND t.tx_id=r.prev_spent_by AND t.mempool IS TRUE;
-
-		  -- Make sure this tx isn't replaced
-		  UPDATE txs t SET replaced_by=NULL
-		  WHERE t.code=r.code AND t.tx_id=r.spent_by AND t.mempool IS TRUE;
-
-		  -- Propagate to the children
-		  WITH RECURSIVE cte(code, tx_id) AS
-		  (
-			SELECT  t.code, t.tx_id FROM txs t
-			WHERE
-				t.code=r.code AND
-				t.tx_id=r.prev_spent_by
-			UNION
-			SELECT t.code, t.tx_id FROM cte c
-			JOIN outs o USING (code, tx_id)
-			JOIN ins i ON i.code=c.code AND i.spent_tx_id=o.tx_id AND i.spent_idx=o.idx
-			JOIN txs t ON t.code=c.code AND t.tx_id=i.input_tx_id
-			WHERE t.code=c.code AND t.mempool IS TRUE
-		  )
-		  UPDATE txs t SET replaced_by=r.spent_by
-		  FROM cte
-		  WHERE cte.code=t.code AND cte.tx_id=t.tx_id;
-	  END IF;
-  END LOOP;
-
    -- Take the denormalized values from the associated tx, and spent outs, put them in the inserted
   SELECT * INTO r FROM txs WHERE code=NEW.code AND tx_id=NEW.input_tx_id;
   NEW.blk_id = r.blk_id;
@@ -564,10 +542,11 @@ CREATE TABLE IF NOT EXISTS ins_outs (
   script TEXT NOT NULL,
   value BIGINT NOT NULL,
   asset_id TEXT NOT NULL,
-  immature BOOLEAN,
   -- Denormalized data which rarely change: Must be same as tx
+  immature BOOLEAN DEFAULT NULL,
   blk_id TEXT DEFAULT NULL,
   blk_idx INT DEFAULT NULL,
+  blk_height BIGINT DEFAULT NULL,
   mempool BOOLEAN DEFAULT 't',
   replaced_by TEXT DEFAULT NULL,
   seen_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
@@ -585,8 +564,7 @@ WITH current_ins AS
 	SELECT i.* FROM ins i
 	WHERE i.blk_id IS NOT NULL OR (i.mempool IS TRUE AND i.replaced_by IS NULL)
 )
-SELECT o.*, ob.height, i.input_tx_id spending_tx_id, i.input_idx spending_idx, (i.mempool IS TRUE) spent_mempool FROM outs o
-LEFT JOIN blks ob USING (code, blk_id)
+SELECT o.*, i.input_tx_id spending_tx_id, i.input_idx spending_idx, (i.mempool IS TRUE) spent_mempool FROM outs o
 LEFT JOIN current_ins i ON o.code = i.code AND o.tx_id = i.spent_tx_id AND o.idx = i.spent_idx
 WHERE o.spent_blk_id IS NULL AND (o.blk_id IS NOT NULL OR (o.mempool IS TRUE AND o.replaced_by IS NULL)) AND
 	  (i.input_tx_id IS NULL OR i.mempool IS TRUE);
@@ -622,7 +600,7 @@ GROUP BY wallet_id, code, asset_id;
 CREATE TABLE IF NOT EXISTS spent_outs (
   code TEXT NOT NULL,
   tx_id TEXT NOT NULL,
-  idx TEXT NOT NULL,
+  idx BIGINT NOT NULL,
   spent_by TEXT NOT NULL,
   prev_spent_by TEXT DEFAULT NULL,
   spent_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
@@ -712,31 +690,133 @@ CREATE TYPE new_in AS (
   spent_idx BIGINT
 );
 
-CREATE OR REPLACE PROCEDURE new_txs(in_code TEXT, in_outs new_out[], in_ins new_in[]) LANGUAGE plpgsql AS $$
+-- fetch_matches will take a list of outputs and inputs, then save those that we are traking in temporary table matched_outs/matched_ins
+-- save_matches will insert the matched_outs/matched_ins into the database.
+-- We provide convenience functions for save_matches which do both at same time.
+
+CREATE OR REPLACE PROCEDURE save_matches(in_code TEXT, in_outs new_out[], in_ins new_in[]) LANGUAGE plpgsql AS $$
 BEGIN
-  CALL new_txs(in_code, in_outs, in_ins, CURRENT_TIMESTAMP);
+  CALL save_matches (in_code, in_outs, in_ins, CURRENT_TIMESTAMP);
 END $$;
 
-CREATE OR REPLACE PROCEDURE new_txs(in_code TEXT, in_outs new_out[], in_ins new_in[], in_seen_at TIMESTAMPTZ) LANGUAGE plpgsql AS $$
+-- Need to call fetch_matches first
+CREATE OR REPLACE PROCEDURE save_matches(in_code TEXT) LANGUAGE plpgsql AS $$
+BEGIN
+  CALL save_matches (in_code, CURRENT_TIMESTAMP);
+END $$;
+
+CREATE OR REPLACE PROCEDURE save_matches(in_code TEXT, in_outs new_out[], in_ins new_in[], in_seen_at TIMESTAMPTZ) LANGUAGE plpgsql AS $$
+BEGIN
+  CALL fetch_matches (in_code, in_outs, in_ins);
+  CALL save_matches(in_code, in_seen_at);
+END $$;
+
+-- Need to call fetch_matches first
+CREATE OR REPLACE PROCEDURE save_matches(in_code TEXT, in_seen_at TIMESTAMPTZ) LANGUAGE plpgsql AS $$
 DECLARE
   r RECORD;
 BEGIN
   FOR r IN
-	SELECT o.* FROM scripts s
-	JOIN unnest(in_outs) o USING (script)
-	WHERE s.code=in_code
+	SELECT * FROM matched_outs
   LOOP
 	INSERT INTO txs (code, tx_id) VALUES (in_code, r.tx_id) ON CONFLICT (code, tx_id) DO UPDATE SET seen_at=LEAST(in_seen_at, txs.seen_at);
 	INSERT INTO outs (code, tx_id, idx, script, value, asset_id) VALUES (in_code, r.tx_id, r.idx, r.script, r.value, r.asset_id) ON CONFLICT DO NOTHING;
   END LOOP;
 
-  -- We need to preserve order of insertion of the inputs since it is important for double spend detection
   FOR r IN
-	SELECT i.* FROM  unnest(in_ins) WITH ORDINALITY AS i(tx_id, idx, spent_tx_id, spent_idx, "order"),
-	LATERAL (SELECT * FROM outs o WHERE o.code=in_code AND o.tx_id=i.spent_tx_id AND o.idx=i.spent_idx) o
-	ORDER BY "order"
+	SELECT * FROM matched_ins
   LOOP
 	INSERT INTO txs (code, tx_id) VALUES (in_code, r.tx_id) ON CONFLICT (code, tx_id) DO UPDATE SET seen_at=LEAST(in_seen_at, txs.seen_at);
 	INSERT INTO ins (code, input_tx_id, input_idx, spent_tx_id, spent_idx) VALUES (in_code, r.tx_id, r.idx, r.spent_tx_id, r.spent_idx) ON CONFLICT DO NOTHING;
   END LOOP;
+
+  INSERT INTO spent_outs
+  SELECT in_code, spent_tx_id, spent_idx, tx_id FROM new_ins
+  ON CONFLICT DO NOTHING;
+
+  FOR r IN
+	SELECT * FROM matched_conflicts
+  LOOP
+	UPDATE spent_outs SET spent_by=r.replacing_tx_id, prev_spent_by=r.replaced_tx_id
+	WHERE code=r.code AND tx_id=r.spent_tx_id AND idx=r.spent_idx;
+	UPDATE txs SET replaced_by=r.replacing_tx_id
+	WHERE code=r.code AND tx_id=r.replaced_tx_id;
+  END LOOP;
+END $$;
+
+-- Will create two temporary tables: matched_outs and matched_ins with the matches
+CREATE OR REPLACE PROCEDURE fetch_matches(in_code TEXT, in_outs new_out[], in_ins new_in[]) LANGUAGE plpgsql AS $$
+BEGIN
+	DROP TABLE IF EXISTS matched_outs;
+	DROP TABLE IF EXISTS matched_ins;
+	DROP TABLE IF EXISTS matched_conflicts;
+	DROP TABLE IF EXISTS new_ins;
+
+	CREATE TEMPORARY TABLE matched_outs AS 
+	SELECT o.* FROM scripts s
+	JOIN unnest(in_outs)  WITH ORDINALITY AS o(tx_id, idx, script, value, asset_id, "order") USING (script)
+	WHERE s.code=in_code
+	ORDER BY "order";
+
+	-- Fancy way to remove dups (https://stackoverflow.com/questions/6583916/delete-duplicate-rows-from-small-table)
+	DELETE FROM matched_outs a USING (
+      SELECT MIN(ctid) as ctid, tx_id, idx
+        FROM matched_outs
+        GROUP BY tx_id, idx HAVING COUNT(*) > 1
+      ) b
+      WHERE a.tx_id = b.tx_id AND a.idx = b.idx
+      AND a.ctid <> b.ctid;
+
+	-- This table will include only the ins we need to add to the spent_outs for double spend detection
+	CREATE TEMPORARY TABLE new_ins AS
+	SELECT in_code code, i.* FROM unnest(in_ins) WITH ORDINALITY AS i(tx_id, idx, spent_tx_id, spent_idx, "order");
+
+	CREATE TEMPORARY TABLE matched_ins AS
+	SELECT * FROM
+	  (SELECT i.*, o.script, o.value, o.asset_id  FROM new_ins i
+	  JOIN outs o ON o.code=i.code AND o.tx_id=i.spent_tx_id AND o.idx=i.spent_idx
+	  UNION ALL
+	  SELECT i.*, o.script, o.value, o.asset_id  FROM new_ins i
+	  JOIN matched_outs o ON i.spent_tx_id = o.tx_id AND i.spent_idx = o.idx) i
+	ORDER BY "order";
+
+	DELETE FROM new_ins
+	WHERE NOT tx_id=ANY(SELECT tx_id FROM matched_ins) AND NOT tx_id=ANY(SELECT tx_id FROM matched_outs);
+
+	CREATE TEMPORARY TABLE matched_conflicts AS
+	WITH RECURSIVE cte(code, spent_tx_id, spent_idx, replacing_tx_id, replaced_tx_id) AS
+	(
+	  SELECT in_code code, i.spent_tx_id, i.spent_idx, i.tx_id replacing_tx_id, so.spent_by replaced_tx_id FROM new_ins i
+	  JOIN spent_outs so ON so.code=in_code AND so.tx_id=i.spent_tx_id AND so.idx=i.spent_idx
+	  JOIN txs rt ON so.code=rt.code AND rt.tx_id=so.spent_by
+	  WHERE so.spent_by != i.tx_id AND rt.code=in_code AND rt.mempool IS TRUE
+	  UNION
+	  SELECT c.code, c.spent_tx_id, c.spent_idx, c.replacing_tx_id, i.input_tx_id replaced_tx_id FROM cte c
+	  JOIN outs o ON o.code=c.code AND o.tx_id=c.replaced_tx_id
+	  JOIN ins i ON i.code=c.code AND i.spent_tx_id=o.tx_id AND i.spent_idx=o.idx
+	  WHERE i.code=c.code AND i.mempool IS TRUE
+	)
+	SELECT * FROM cte;
+	
+	DELETE FROM matched_ins a USING (
+      SELECT MIN(ctid) as ctid, tx_id, idx
+        FROM matched_ins 
+        GROUP BY tx_id, idx HAVING COUNT(*) > 1
+      ) b
+      WHERE a.tx_id = b.tx_id AND a.idx = b.idx
+      AND a.ctid <> b.ctid;
+
+	DELETE FROM matched_conflicts a USING (
+      SELECT MIN(ctid) as ctid, replaced_tx_id
+        FROM matched_conflicts 
+        GROUP BY replaced_tx_id HAVING COUNT(*) > 1
+      ) b
+      WHERE a.replaced_tx_id = b.replaced_tx_id
+      AND a.ctid <> b.ctid;
+
+	-- Make order start by 0, as most languages have array starting by 0
+	UPDATE matched_ins i
+	SET "order"=i."order" - 1;
+	UPDATE matched_outs o
+	SET "order"=o."order" - 1;
 END $$;

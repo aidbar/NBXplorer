@@ -380,9 +380,9 @@ namespace NBXplorer
 
 		record ScriptPubKeyQuery(string code, string id);
 
-		public async Task<TrackedTransaction[]> GetMatches(Block block, uint256 blockId, DateTimeOffset now, bool useCache)
+		public async Task<TrackedTransaction[]> GetMatches(Block block, SlimChainedBlock slimBlock, DateTimeOffset now, bool useCache)
 		{
-			var matches = await GetMatches(block.Transactions, blockId, now, useCache);
+			var matches = await GetMatches(block.Transactions, slimBlock, now, useCache);
 			if (matches.Length > 0)
 			{
 				var blockIndexes = block.Transactions.Select((tx, i) => (tx, i))
@@ -393,7 +393,7 @@ namespace NBXplorer
 			return matches;
 		}
 
-		public async Task<TrackedTransaction[]> GetMatches(IList<Transaction> txs, uint256 blockId, DateTimeOffset now, bool useCache)
+		public async Task<TrackedTransaction[]> GetMatches(IList<Transaction> txs, SlimChainedBlock slimBlock, DateTimeOffset now, bool useCache)
 		{
 			foreach (var tx in txs)
 				tx.PrecomputeHash(false, true);
@@ -414,7 +414,7 @@ namespace NBXplorer
 			{
 				if (!transactions.TryAdd(tx.GetHash(), tx))
 					continue;
-				if (blockId != null && useCache && noMatchCache.Contains(tx.GetHash()))
+				if (slimBlock?.Hash != null && useCache && noMatchCache.Contains(tx.GetHash()))
 				{
 					continue;
 				}
@@ -449,6 +449,8 @@ namespace NBXplorer
 			}
 
 			await using var connection = await connectionFactory.CreateConnectionHelper(Network);
+
+
 			foreach (var kv in await connection.GetOutputs(outpoints))
 			{
 				if (kv.Value is null)
@@ -475,9 +477,10 @@ namespace NBXplorer
 						if (!matches.TryGetValue(matchesGroupingKey, out TrackedTransaction match))
 						{
 							match = CreateTrackedTransaction(keyInfo.TrackedSource,
-								new TrackedTransactionKey(tx.GetHash(), blockId, false),
+								new TrackedTransactionKey(tx.GetHash(), slimBlock?.Hash, false),
 								tx,
 								new Dictionary<Script, KeyPath>());
+							match.BlockHeight = slimBlock?.Height;
 							match.FirstSeen = now;
 							match.Inserted = now;
 							matches.Add(matchesGroupingKey, match);
@@ -495,7 +498,7 @@ namespace NBXplorer
 
 			foreach (var tx in txs)
 			{
-				if (blockId == null &&
+				if (slimBlock?.Hash == null &&
 					noMatchTransactions.Contains(tx.GetHash()))
 				{
 					noMatchCache.Add(tx.GetHash());
@@ -513,9 +516,9 @@ namespace NBXplorer
 			return TrackedSource.Parse(legacyScheme, Network);
 		}
 
-		public Task<TrackedTransaction[]> GetMatches(Transaction tx, uint256 blockId, DateTimeOffset now, bool useCache)
+		public Task<TrackedTransaction[]> GetMatches(Transaction tx, SlimChainedBlock slimBlock, DateTimeOffset now, bool useCache)
 		{
-			return GetMatches(new[] { tx }, blockId, now, useCache);
+			return GetMatches(new[] { tx }, slimBlock, now, useCache);
 		}
 
 		public async Task<Dictionary<OutPoint, TxOut>> GetOutPointToTxOut(IList<OutPoint> outPoints)
@@ -783,25 +786,39 @@ namespace NBXplorer
 				return;
 			await using var helper = await connectionFactory.CreateConnectionHelper(Network);
 			var connection = helper.Connection;
-			await helper.SaveTransactions(transactions.Select(t => (t.Transaction, t.TransactionHash, t.BlockHash, t.BlockIndex)), null);
+
+			var outCount = transactions.Select(t => t.ReceivedCoins.Count).Sum();
+			var inCount = transactions.Select(t => t.SpentOutpoints.Count).Sum();
+			List<DbConnectionHelper.NewOut> outs = new List<DbConnectionHelper.NewOut>(outCount);
+			List<DbConnectionHelper.NewIn> ins = new List<DbConnectionHelper.NewIn>(inCount);
 			foreach (var tx in transactions)
 			{
-				var outs = tx.GetReceivedOutputs()
-					.Select(received => (
-						new OutPoint(tx.TransactionHash, received.Index),
-						new TxOut((Money)received.Value, received.ScriptPubKey),
-						tx.IsCoinBase // We normalize this flag at every block, so even if it's mature, it doesn't matter.
-					));
-				await helper.InsertOuts(outs);
-
-				var outpointList = tx.BlockHash is not null && tx.Transaction is Transaction t ?
-									t.Inputs.Skip(t.IsCoinBase ? 1 : 0).Select(i => i.PrevOut) : tx.SpentOutpoints;
-				var ins = outpointList.Select(spent => (
+				if (!tx.IsCoinBase)
+				{
+					foreach (var input in tx.SpentOutpoints)
+					{
+						ins.Add(new DbConnectionHelper.NewIn(
+							tx.TransactionHash,
+							tx.IndexOfInput(input),
+							input.Hash,
+							(int)input.N
+							));
+					}
+				}
+				
+				foreach (var output in tx.GetReceivedOutputs())
+				{
+					outs.Add(new DbConnectionHelper.NewOut(
 						tx.TransactionHash,
-						tx.IndexOfInput(spent),
-						spent));
-				await helper.InsertIns(ins);
+						output.Index,
+						output.ScriptPubKey,
+						(Money)output.Value
+						));
+				}
 			}
+			await helper.FetchMatches(outs, ins);
+			await helper.SaveTransactions(transactions.Select(t => (t.Transaction, t.TransactionHash, t.BlockHash, t.BlockIndex, t.BlockHeight, t.IsCoinBase)), null);
+			await helper.Connection.ExecuteAsync("CALL save_matches(@code)", new { code = Network.CryptoCode });
 		}
 
 		public async Task SaveMetadata<TMetadata>(TrackedSource source, string key, TMetadata value) where TMetadata : class
@@ -822,13 +839,13 @@ namespace NBXplorer
 			return await helper.GetMetadata<TMetadata>(walletKey.wid, key);
 		}
 
-		public async Task<List<Repository.SavedTransaction>> SaveTransactions(DateTimeOffset now, Transaction[] transactions, uint256 blockHash)
+		public async Task<List<Repository.SavedTransaction>> SaveTransactions(DateTimeOffset now, Transaction[] transactions, SlimChainedBlock slimBlock)
 		{
 			await using var helper = await connectionFactory.CreateConnectionHelper(Network);
-			await helper.SaveTransactions(transactions.Select(t => (t, null as uint256, blockHash, null as int?)), now);
+			await helper.SaveTransactions(transactions.Select(t => (t, null as uint256, slimBlock?.Hash, null as int?, (long?)slimBlock?.Height, false)), now);
 			return transactions.Select(t => new Repository.SavedTransaction()
 			{
-				BlockHash = blockHash,
+				BlockHash = slimBlock?.Hash,
 				Timestamp = now,
 				Transaction = t
 			}).ToList();

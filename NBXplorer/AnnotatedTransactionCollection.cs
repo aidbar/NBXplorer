@@ -95,13 +95,7 @@ namespace NBXplorer
 				foreach (var spent in annotatedTransaction.Record.SpentOutpoints)
 				{
 					// No way to have double spent in confirmed transactions
-					try
-					{
-						spentBy.Add(spent, annotatedTransaction.Record.TransactionHash);
-					}
-					catch
-					{
-					}
+					spentBy.Add(spent, annotatedTransaction.Record.TransactionHash);
 				}
 			}
 

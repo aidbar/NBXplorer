@@ -843,7 +843,7 @@ namespace NBXplorer
 		{
 			get; set;
 		} = 100;
-		public async Task<List<SavedTransaction>> SaveTransactions(DateTimeOffset now, NBitcoin.Transaction[] transactions, uint256 blockHash)
+		public async Task<List<SavedTransaction>> SaveTransactions(DateTimeOffset now, NBitcoin.Transaction[] transactions, SlimChainedBlock slimBlock)
 		{
 			var result = new List<SavedTransaction>();
 			transactions = transactions.Distinct().ToArray();
@@ -857,7 +857,7 @@ namespace NBXplorer
 				{
 					var timestamped = new TimeStampedTransaction(btx, date);
 					var value = timestamped.ToBytes();
-					var key = GetSavedTransactionKey(btx.GetHash(), blockHash);
+					var key = GetSavedTransactionKey(btx.GetHash(), slimBlock?.Hash);
 					await GetSavedTransactionTable(tx).Insert(key, value);
 					result.Add(ToSavedTransaction(Network.NBitcoinNetwork, key, value));
 				}
@@ -1285,16 +1285,16 @@ namespace NBXplorer
 		}
 
 		FixedSizeCache<uint256, uint256> noMatchCache = new FixedSizeCache<uint256, uint256>(5000, k => k);
-		public Task<TrackedTransaction[]> GetMatches(NBitcoin.Transaction tx, uint256 blockId, DateTimeOffset now, bool useCache)
+		public Task<TrackedTransaction[]> GetMatches(NBitcoin.Transaction tx, SlimChainedBlock slimBlock, DateTimeOffset now, bool useCache)
 		{
-			return GetMatches(new[] { tx }, blockId, now, useCache);
+			return GetMatches(new[] { tx }, slimBlock, now, useCache);
 		}
-		public async Task<TrackedTransaction[]> GetMatches(Block block, uint256 blockId, DateTimeOffset now, bool useCache)
+		public async Task<TrackedTransaction[]> GetMatches(Block block, SlimChainedBlock slimBlock, DateTimeOffset now, bool useCache)
 		{
-			return await GetMatches(block.Transactions, blockId, now, useCache);
+			return await GetMatches(block.Transactions, slimBlock, now, useCache);
 		}
 
-		public async Task<TrackedTransaction[]> GetMatches(IList<NBitcoin.Transaction> txs, uint256 blockId, DateTimeOffset now, bool useCache)
+		public async Task<TrackedTransaction[]> GetMatches(IList<NBitcoin.Transaction> txs, SlimChainedBlock slimBlock, DateTimeOffset now, bool useCache)
 		{
 			foreach (var tx in txs)
 				tx.PrecomputeHash(false, true);
@@ -1315,7 +1315,7 @@ namespace NBXplorer
 			{
 				if (!transactions.TryAdd(tx.GetHash(), tx))
 					continue;
-				if (blockId != null && useCache && noMatchCache.Contains(tx.GetHash()))
+				if (slimBlock?.Hash != null && useCache && noMatchCache.Contains(tx.GetHash()))
 				{
 					continue;
 				}
@@ -1374,7 +1374,7 @@ namespace NBXplorer
 						if (!matches.TryGetValue(matchesGroupingKey, out TrackedTransaction match))
 						{
 							match = CreateTrackedTransaction(keyInfo.TrackedSource,
-								new TrackedTransactionKey(tx.GetHash(), blockId, false),
+								new TrackedTransactionKey(tx.GetHash(), slimBlock?.Hash, false),
 								tx,
 								new Dictionary<Script, KeyPath>());
 							match.FirstSeen = now;
@@ -1395,7 +1395,7 @@ namespace NBXplorer
 
 			foreach (var tx in txs)
 			{
-				if (blockId == null &&
+				if (slimBlock?.Hash == null &&
 					noMatchTransactions.Contains(tx.GetHash()))
 				{
 					noMatchCache.Add(tx.GetHash());

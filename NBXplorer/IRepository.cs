@@ -29,9 +29,9 @@ namespace NBXplorer
 		Task<BlockLocator> GetIndexProgress();
 		Task<MultiValueDictionary<Script, KeyPathInformation>> GetKeyInformations(IList<Script> scripts);
 		Task<IList<NewEventBase>> GetLatestEvents(int limit = 10);
-		Task<TrackedTransaction[]> GetMatches(Block block, uint256 blockId, DateTimeOffset now, bool useCache);
-		Task<TrackedTransaction[]> GetMatches(IList<Transaction> txs, uint256 blockId, DateTimeOffset now, bool useCache);
-		Task<TrackedTransaction[]> GetMatches(Transaction tx, uint256 blockId, DateTimeOffset now, bool useCache);
+		Task<TrackedTransaction[]> GetMatches(Block block, SlimChainedBlock slimBlock, DateTimeOffset now, bool useCache);
+		Task<TrackedTransaction[]> GetMatches(IList<Transaction> txs, SlimChainedBlock slimBlock, DateTimeOffset now, bool useCache);
+		Task<TrackedTransaction[]> GetMatches(Transaction tx, SlimChainedBlock slimBlock, DateTimeOffset now, bool useCache);
 		Task<TMetadata> GetMetadata<TMetadata>(TrackedSource source, string key) where TMetadata : class;
 		Task<Dictionary<OutPoint, TxOut>> GetOutPointToTxOut(IList<OutPoint> outPoints);
 		Task<Repository.SavedTransaction[]> GetSavedTransactions(uint256 txid);
@@ -44,7 +44,7 @@ namespace NBXplorer
 		Task SaveKeyInformations(KeyPathInformation[] keyPathInformations);
 		Task SaveMatches(TrackedTransaction[] transactions);
 		Task SaveMetadata<TMetadata>(TrackedSource source, string key, TMetadata value) where TMetadata : class;
-		Task<List<Repository.SavedTransaction>> SaveTransactions(DateTimeOffset now, Transaction[] transactions, uint256 blockHash);
+		Task<List<Repository.SavedTransaction>> SaveTransactions(DateTimeOffset now, Transaction[] transactions, SlimChainedBlock slimBlock);
 		Task SetIndexProgress(BlockLocator locator);
 		Task Track(IDestination address);
 		ValueTask<int> TrimmingEvents(int maxEvents, CancellationToken cancellationToken = default);

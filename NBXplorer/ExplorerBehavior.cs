@@ -184,9 +184,9 @@ namespace NBXplorer
 					await Repository.NewBlock(slimBlockHeader);
 				DateTimeOffset now = DateTimeOffset.UtcNow;
 				var matches =
-					(await Repository.GetMatches(block, blockHash, now, true))
+					(await Repository.GetMatches(block, slimBlockHeader, now, true))
 					.ToArray();
-				await SaveMatches(matches, blockHash, now, true);
+				await SaveMatches(matches, slimBlockHeader, now, true);
 				if (slimBlockHeader != null)
 				{
 					var blockEvent = new Models.NewBlockEvent()
@@ -222,21 +222,17 @@ namespace NBXplorer
 			var matches = (await Repository.GetMatches(transaction, null, now, false)).ToArray();
 			await SaveMatches(matches, null, now, fireEvents);
 		}
-		private async Task SaveMatches(TrackedTransaction[] matches, uint256 blockHash, DateTimeOffset now, bool fireEvents)
+		private async Task SaveMatches(TrackedTransaction[] matches, SlimChainedBlock slimBlock, DateTimeOffset now, bool fireEvents)
 		{
 			await Repository.SaveMatches(matches);
-			if (blockHash is not null)
-				await Repository.NewBlockCommit(blockHash);
+			if (slimBlock?.Hash is not null)
+				await Repository.NewBlockCommit(slimBlock?.Hash);
 			_ = AddressPoolService.GenerateAddresses(Network, matches);
-			var saved = await Repository.SaveTransactions(now, matches.Select(m => m.Transaction).Distinct().ToArray(), blockHash);
+			var saved = await Repository.SaveTransactions(now, matches.Select(m => m.Transaction).Distinct().ToArray(), slimBlock);
 			var savedTransactions = saved.ToDictionary(s => s.Transaction.GetHash());
 
 			int? maybeHeight = null;
 			var chainHeight = Chain.Height;
-			if (blockHash != null && Chain.TryGetHeight(blockHash, out int height))
-			{
-				maybeHeight = height;
-			}
 			if (fireEvents)
 			{
 				Task[] saving = new Task[matches.Length];
@@ -247,10 +243,10 @@ namespace NBXplorer
 						TrackedSource = matches[i].TrackedSource,
 						DerivationStrategy = (matches[i].TrackedSource is DerivationSchemeTrackedSource dsts) ? dsts.DerivationStrategy : null,
 						CryptoCode = Network.CryptoCode,
-						BlockId = blockHash,
+						BlockId = slimBlock?.Hash,
 						TransactionData = new TransactionResult()
 						{
-							BlockId = blockHash,
+							BlockId = slimBlock?.Hash,
 							Height = maybeHeight,
 							Confirmations = maybeHeight == null ? 0 : chainHeight - maybeHeight.Value + 1,
 							Timestamp = now,

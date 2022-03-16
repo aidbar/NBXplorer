@@ -681,13 +681,15 @@ namespace NBXplorer.Controllers
 												   .Where(tx => tx.Transaction != null)
 												   .ToArray();
 
+			var chain = ChainProvider.GetChain(network);
 			foreach (var txs in transactions.GroupBy(t => t.BlockId, t => (t.Transaction, t.BlockTime))
 											.OrderBy(t => t.First().BlockTime))
 			{
-				await repo.SaveTransactions(txs.First().BlockTime, txs.Select(t => t.Transaction).ToArray(), txs.Key);
+				var slimBlock = txs.Key is null ? null : chain.GetBlock(txs.Key);
+				await repo.SaveTransactions(txs.First().BlockTime, txs.Select(t => t.Transaction).ToArray(), slimBlock);
 				foreach (var tx in txs)
 				{
-					var matches = await repo.GetMatches(tx.Transaction, txs.Key, tx.BlockTime, false);
+					var matches = await repo.GetMatches(tx.Transaction, slimBlock, tx.BlockTime, false);
 					await repo.SaveMatches(matches);
 					_ = AddressPoolService.GenerateAddresses(network, matches);
 				}
