@@ -567,7 +567,7 @@ CREATE TABLE IF NOT EXISTS wallets_scripts (
   FOREIGN KEY (code, script) REFERENCES scripts ON DELETE CASCADE,
   FOREIGN KEY (code, descriptor, idx) REFERENCES descriptors_scripts ON DELETE CASCADE
 );
-CREATE INDEX IF NOT EXISTS scripts_by_wallet_id_idx ON wallets_scripts(code, wallet_id);
+CREATE INDEX IF NOT EXISTS scripts_by_wallet_id_idx ON wallets_scripts(wallet_id);
 
 -- Returns a log of inputs and outputs
 -- This table is denormalized to improve performance on queries involving seen_at
@@ -600,7 +600,7 @@ CREATE TABLE IF NOT EXISTS ins_outs (
   PRIMARY KEY (code, tx_id, idx, is_out),
   FOREIGN KEY (code, spent_tx_id, spent_idx) REFERENCES outs (code, tx_id, idx) -- outs_delete_ins_outs trigger will take care of deleting, no CASCADE
 );
-CREATE INDEX IF NOT EXISTS ins_outs_seen_at_idx ON ins_outs (seen_at);
+CREATE INDEX IF NOT EXISTS ins_outs_seen_at_idx ON ins_outs (seen_at, blk_height, blk_idx);
 
 -- Returns current UTXOs
 -- Warning: It also returns the UTXO that are confirmed but spent in the mempool, as well as immature utxos.
@@ -655,19 +655,29 @@ CREATE TABLE IF NOT EXISTS spent_outs (
 -- If you want the latest history of a wallet, use get_wallets_recent instead.
 CREATE MATERIALIZED VIEW IF NOT EXISTS wallets_history AS
 	SELECT q.wallet_id,
-		   io.code,
-		   io.asset_id,
-		   tx_id,
-		   io.seen_at,
-		   COALESCE(SUM (value) FILTER (WHERE is_out IS TRUE), 0) -  COALESCE(SUM (value) FILTER (WHERE is_out IS FALSE), 0) balance_change,
-		   SUM(COALESCE(SUM (value) FILTER (WHERE is_out IS TRUE), 0) -  COALESCE(SUM (value) FILTER (WHERE is_out IS FALSE), 0)) OVER (PARTITION BY wallet_id, io.code, asset_id ORDER BY io.seen_at) balance_total
-	FROM ins_outs io,
-	LATERAL (SELECT ts.wallet_id, ts.code, ts.script
-			 FROM wallets_scripts ts
-			 WHERE ts.code = io.code AND ts.script = io.script) q
-	WHERE blk_id IS NOT NULL
-	GROUP BY wallet_id, io.code, io.asset_id, tx_id, seen_at
-	ORDER BY seen_at DESC, tx_id, asset_id
+		   q.code,
+		   q.asset_id,
+		   q.tx_id,
+		   q.seen_at,
+		   q.balance_change,
+		SUM(q.balance_change) OVER (PARTITION BY wallet_id, code, asset_id ORDER BY seen_at, blk_height, blk_idx) balance_total,
+		RANK() OVER (PARTITION BY wallet_id, code, asset_id ORDER BY seen_at, blk_height, blk_idx) nth
+		FROM (
+			SELECT q.wallet_id,
+				   io.code,
+				   io.asset_id,
+				   MIN(io.blk_idx) blk_idx,
+				   MIN(io.blk_height) blk_height,
+				   tx_id,
+				   MIN(io.seen_at) seen_at,
+				   COALESCE(SUM (value) FILTER (WHERE is_out IS TRUE), 0) -  COALESCE(SUM (value) FILTER (WHERE is_out IS FALSE), 0) balance_change
+			FROM ins_outs io,
+			LATERAL (SELECT ts.wallet_id, ts.code, ts.script
+					 FROM wallets_scripts ts
+					 WHERE ts.code = io.code AND ts.script = io.script) q
+			WHERE blk_id IS NOT NULL
+			GROUP BY wallet_id, io.code, io.asset_id, tx_id) q
+	ORDER BY seen_at DESC, blk_height DESC, blk_idx DESC
 WITH DATA;
 CREATE UNIQUE INDEX wallets_history_pk ON wallets_history (wallet_id, code, asset_id, tx_id);
 CREATE INDEX wallets_history_by_seen_at ON wallets_history (seen_at);
@@ -690,30 +700,36 @@ $$  LANGUAGE SQL STABLE;
 -- Useful view to see what has going on recently in a wallet. Doesn't depends on wallets_history.
 CREATE OR REPLACE FUNCTION get_wallets_recent(in_wallet_id TEXT, in_limit INT, in_offset INT)
 RETURNS TABLE(wallet_id TEXT, code TEXT, asset_id TEXT, tx_id TEXT, seen_at TIMESTAMPTZ, balance_change BIGINT, balance_total BIGINT) AS $$
-	WITH this_balances AS MATERIALIZED (
-		SELECT unconfirmed_balance FROM wallets_balances
-		WHERE wallet_id=in_wallet_id
-	)
-	SELECT q.wallet_id, q.code, q.asset_id, q.tx_id, q.seen_at, q.balance_change, COALESCE((q.latest_balance - LAG(balance_change_sum, 1) OVER (ORDER BY seen_at DESC)), q.latest_balance) balance_total FROM
-		(SELECT q.*, 
-				COALESCE((SELECT unconfirmed_balance FROM this_balances WHERE code=q.code AND asset_id=q.asset_id), 0) latest_balance,
-				SUM(q.balance_change) OVER (ORDER BY seen_at DESC) balance_change_sum FROM 
-			(SELECT q.wallet_id,
-				   io.code,
-				   io.asset_id,
-				   tx_id,
-				   io.seen_at,
-				   COALESCE(SUM (value) FILTER (WHERE is_out IS TRUE), 0) -  COALESCE(SUM (value) FILTER (WHERE is_out IS FALSE), 0) balance_change
-			FROM ins_outs io,
-			LATERAL (SELECT ts.wallet_id, ts.code, ts.script
-					 FROM wallets_scripts ts
-					 WHERE ts.code = io.code AND ts.script = io.script) q
-			WHERE (blk_id IS NOT NULL OR (mempool IS TRUE AND replaced_by IS NULL))
-			GROUP BY wallet_id, io.code, io.asset_id, tx_id, seen_at HAVING (wallet_id=in_wallet_id)
-			ORDER BY seen_at DESC, tx_id, asset_id
-			LIMIT in_limit) q
-		) q
-	OFFSET in_offset
+  WITH this_balances AS MATERIALIZED (
+	  SELECT code, asset_id, unconfirmed_balance FROM wallets_balances
+	  WHERE wallet_id=in_wallet_id
+  ),
+  latest_txs AS (
+	SELECT q.wallet_id,
+				io.code,
+				io.asset_id,
+				blk_idx,
+			    blk_height,
+				tx_id,
+				seen_at,
+				COALESCE(SUM (value) FILTER (WHERE is_out IS TRUE), 0) -  COALESCE(SUM (value) FILTER (WHERE is_out IS FALSE), 0) balance_change
+		FROM ins_outs io,
+		LATERAL (SELECT ts.wallet_id, ts.code, ts.script
+				  FROM wallets_scripts ts
+				  WHERE ts.code = io.code AND ts.script = io.script) q
+		WHERE (blk_id IS NOT NULL OR (mempool IS TRUE AND replaced_by IS NULL))
+		GROUP BY wallet_id, io.code, io.asset_id, tx_id, seen_at, blk_height, blk_idx HAVING (wallet_id=in_wallet_id)
+		ORDER BY seen_at DESC, blk_height DESC, blk_idx DESC, asset_id
+	LIMIT in_limit
+  )
+  SELECT q.wallet_id, q.code, q.asset_id, q.tx_id, q.seen_at, q.balance_change, COALESCE((q.latest_balance - LAG(balance_change_sum, 1) OVER (PARTITION BY wallet_id, code, asset_id ORDER BY seen_at DESC, blk_height DESC, blk_idx DESC)), q.latest_balance) balance_total FROM
+	  (SELECT q.*,
+			  COALESCE((SELECT unconfirmed_balance FROM this_balances WHERE code=q.code AND asset_id=q.asset_id), 0) latest_balance,
+			  SUM(q.balance_change) OVER (PARTITION BY wallet_id, code, asset_id ORDER BY seen_at DESC, blk_height DESC, blk_idx DESC) balance_change_sum FROM 
+		  latest_txs q
+	  ) q
+  ORDER BY seen_at DESC, blk_height DESC, blk_idx DESC, asset_id
+  OFFSET in_offset
 $$ LANGUAGE SQL STABLE;
 
 CREATE TYPE new_out AS (

@@ -418,6 +418,101 @@ namespace NBXplorer.Tests
 			balance = conn.QuerySingle("SELECT * FROM wallets_balances WHERE wallet_id='Alice';");
 			Assert.Equal(5, balance.confirmed_balance);
 			Assert.Equal(0, balance.available_balance);
+
+			// What if we have some shitcoins and some assets?
+			await conn.ExecuteAsync(
+			"INSERT INTO scripts VALUES ('LTC', 'l1', '');" +
+			"INSERT INTO wallets_scripts VALUES ('LTC', 'l1', 'Alice');" +
+			"CALL save_matches('LTC', ARRAY[('lt1', 10, 'l1', 8, ''), ('lt1', 0, 'l1', 9, 'ASS')]::new_out[], ARRAY[]::new_in[]);");
+
+			await conn.ExecuteAsync(
+			"INSERT INTO blks VALUES ('LTC', 'lb1', 0, 'lb0');" +
+			"INSERT INTO blks_txs (code, tx_id, blk_id) VALUES ('LTC', 'lt1', 'lb1');" +
+			"UPDATE blks SET confirmed='t' WHERE blk_id='lb1';");
+
+			var balances = conn.Query("SELECT * FROM wallets_balances WHERE wallet_id='Alice';");
+			Assert.Contains(balances, b => b.asset_id == "ASS" && b.code == "LTC" && b.confirmed_balance == 9);
+			Assert.Contains(balances, b => b.asset_id == "" && b.code == "LTC" && b.confirmed_balance == 8);
+			Assert.Contains(balances, b => b.asset_id == "" && b.code == "BTC" && b.confirmed_balance == 5);
+
+			// We spend some of BTC, LTC and asset
+
+			// lt2: We spend the LTC and the ASS. Get 2 LTC of change
+			// lt3: We get 1 ASS
+			// t3: We spend BTC and receive 3 back
+			await conn.ExecuteAsync(
+				"CALL save_matches('LTC'," +
+				"ARRAY[('lt2', 0, 'l1', 2, '')]::new_out[]," +
+				"ARRAY[('lt2', 0, 'lt1', 10), ('lt2', 1, 'lt1', 0)]::new_in[]);" +
+				"CALL save_matches('LTC'," +
+				"ARRAY[('lt3', 0, 'l1', 1, 'ASS')]::new_out[]," +
+				"ARRAY[]::new_in[]);" +
+				"CALL save_matches('BTC'," +
+				"ARRAY[('t3', 0, 'a1', 3, '')]::new_out[]," +
+				"ARRAY[('t3', 0, 't1', 10)]::new_in[]);");
+
+			balances = conn.Query("SELECT * FROM wallets_balances WHERE wallet_id='Alice';");
+			Assert.Contains(balances, b => b.asset_id == "ASS" && b.code == "LTC" && b.unconfirmed_balance == 1);
+			Assert.Contains(balances, b => b.asset_id == "" && b.code == "LTC" && b.unconfirmed_balance == 2);
+			Assert.Contains(balances, b => b.asset_id == "" && b.code == "BTC" && b.unconfirmed_balance == 3);
+
+			await conn.ExecuteAsync(
+			"INSERT INTO blks VALUES ('LTC', 'lb2', 1, 'lb1');" +
+			"INSERT INTO blks_txs (code, tx_id, blk_id, blk_idx) VALUES ('LTC', 'lt2', 'lb2', 0), ('LTC', 'lt3', 'lb2', 1);" +
+			"UPDATE blks SET confirmed='t' WHERE blk_id='lb2';");
+			await conn.ExecuteAsync(
+			"INSERT INTO blks VALUES ('BTC', 'b4', 2, 'b3');" +
+			"INSERT INTO blks_txs (code, tx_id, blk_id) VALUES ('BTC', 't3', 'b4');" +
+			"UPDATE blks SET confirmed='t' WHERE blk_id='b4';");
+
+			await conn.ExecuteAsync("REFRESH MATERIALIZED VIEW wallets_history;");
+			var expectedHistory = new[]
+			{
+				("lt2", -6, 2),
+				("lt1", 8, 8),
+			};
+			var rows = await conn.QueryAsync("SELECT * FROM wallets_history WHERE code='LTC' AND asset_id=''");
+			AssertHistory(expectedHistory, rows);
+			rows = await conn.QueryAsync("SELECT * FROM get_wallets_recent('Alice', 100, 0) WHERE code='LTC' AND asset_id='';");
+			AssertHistory(expectedHistory, rows);
+
+			expectedHistory = new[]
+			{
+				("lt3", 1, 1),
+				("lt2", -9, 0),
+				("lt1", 9, 9)
+			};
+			rows = await conn.QueryAsync("SELECT * FROM wallets_history WHERE code='LTC' AND asset_id='ASS'");
+			AssertHistory(expectedHistory, rows);
+			rows = await conn.QueryAsync("SELECT * FROM get_wallets_recent('Alice', 100, 0) WHERE code='LTC' AND asset_id='ASS';");
+			AssertHistory(expectedHistory, rows);
+
+			expectedHistory = new[]
+			{
+				("t3", -2, 3),
+				("t1", 5, 5)
+			};
+			rows = await conn.QueryAsync("SELECT * FROM wallets_history WHERE code='BTC' AND asset_id=''");
+			AssertHistory(expectedHistory, rows);
+			rows = await conn.QueryAsync("SELECT * FROM get_wallets_recent('Alice', 100, 0) WHERE code='BTC' AND asset_id='';");
+			AssertHistory(expectedHistory, rows);
+		}
+
+		private static void AssertHistory((string, int, int)[] expectedHistory, IEnumerable<dynamic> rows)
+		{
+			foreach (var t in rows.Zip(expectedHistory, (r, h) =>
+						(
+						expectedTxId : h.Item1,
+						expectedChange: h.Item2,
+						expectedTotal: h.Item3,
+						actualChange: (int)r.balance_change,
+						actualTotal: (int)r.balance_total,
+						actualTxId: (string)r.tx_id)))
+			{
+				Assert.Equal(t.expectedTxId, t.actualTxId);
+				Assert.Equal(t.expectedChange, t.actualChange);
+				Assert.Equal(t.expectedTotal, t.actualTotal);
+			}
 		}
 
 		[Fact]
