@@ -101,9 +101,9 @@ namespace NBXplorer.Controllers
 				string keypath,
 				string feature,
 				bool mempool,
-				bool spent_mempool,
+				bool input_mempool,
 				DateTime tx_seen_at)>(
-				$"SELECT blk_height, tx_id, wu.idx, value, script, {column}, mempool, spent_mempool, seen_at " +
+				$"SELECT blk_height, tx_id, wu.idx, value, script, {column}, mempool, input_mempool, seen_at " +
 				$"FROM wallets_utxos wu {join} WHERE code=@code AND wallet_id=@walletId AND immature IS FALSE", new { code = network.CryptoCode, walletId = repo.GetWalletKey(trackedSource).wid }));
 			UTXOChanges changes = new UTXOChanges()
 			{
@@ -134,9 +134,9 @@ namespace NBXplorer.Controllers
 				}
 				if (!utxo.mempool)
 					changes.Confirmed.UTXOs.Add(u);
-				else if (!utxo.spent_mempool)
+				else if (!utxo.input_mempool)
 						changes.Unconfirmed.UTXOs.Add(u);
-				if (utxo.spent_mempool && !utxo.mempool)
+				if (utxo.input_mempool && !utxo.mempool)
 					changes.Unconfirmed.SpentOutpoints.Add(u.Outpoint);
 			}
 			return Json(changes, network.JsonSerializerSettings);

@@ -44,7 +44,9 @@ SELECT 'BTC',
 		encode(sha256(('s-' || s)::bytea), 'hex') script,
 		40 "value",
 		'' asset_id,
-		CASE WHEN s != 223000 THEN encode(sha256(('b-' || s + 1)::bytea), 'hex') ELSE NULL END spent_blk_id,
+		NULL /*CASE WHEN s != 223000 THEN encode(sha256(('t-' || s + 1)::bytea), 'hex') ELSE NULL END input_tx_id */,
+		NULL /* CASE WHEN s != 223000 THEN 0 ELSE NULL END input_idx */,
+		'f' input_mempool,
 		'f' immature,
 		encode(sha256(('b-' || s)::bytea), 'hex') blk_id,
 		0 blk_idx,
@@ -72,6 +74,10 @@ SELECT 'BTC',
 		CURRENT_TIMESTAMP -  interval '1 minute' * (223000 - s) seen_at
 FROM generate_series(0, 223000) s
 WHERE MOD(s, 2) = 1;
+
+UPDATE outs SET
+  input_tx_id= (CASE WHEN blk_height != 223000 THEN encode(sha256(('t-' || blk_height + 1)::bytea), 'hex') ELSE NULL END),
+  input_idx= (CASE WHEN blk_height != 223000 THEN 0 ELSE NULL END);
 
 INSERT INTO ins_outs
   SELECT

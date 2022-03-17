@@ -233,7 +233,9 @@ CREATE TABLE IF NOT EXISTS outs (
   script TEXT NOT NULL,
   value BIGINT NOT NULL,
   asset_id TEXT NOT NULL DEFAULT '',
-  spent_blk_id TEXT DEFAULT NULL,
+  input_tx_id TEXT DEFAULT NULL,
+  input_idx BIGINT DEFAULT NULL,
+  input_mempool BOOLEAN NOT NULL DEFAULT 'f',
   -- Denormalized data which rarely change: Must be same as tx
   immature BOOLEAN NOT NULL DEFAULT 'f',
   blk_id TEXT DEFAULT NULL,
@@ -243,11 +245,11 @@ CREATE TABLE IF NOT EXISTS outs (
   replaced_by TEXT DEFAULT NULL,
   seen_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
   /* PRIMARY KEY (code, tx_id, idx) (enforced with index), */
-  FOREIGN KEY (code, spent_blk_id) REFERENCES blks (code, blk_id) ON DELETE SET NULL,
+  /* FOREIGN KEY (code, input_tx_id, input_idx) REFERENCES ins (code, input_tx_id, input_idx) ON DELETE SET NULL, Circular deps */
   FOREIGN KEY (code, tx_id) REFERENCES txs ON DELETE CASCADE,
   FOREIGN KEY (code, script) REFERENCES scripts ON DELETE CASCADE);
 
-CREATE INDEX IF NOT EXISTS outs_unspent_idx ON outs (code) WHERE spent_blk_id IS NULL;
+CREATE INDEX IF NOT EXISTS outs_unspent_idx ON outs (code) WHERE (blk_id IS NOT NULL OR (mempool IS TRUE AND replaced_by IS NULL)) AND (input_tx_id IS NULL OR input_mempool IS TRUE);
 
 CREATE OR REPLACE FUNCTION outs_denormalize_to_ins_outs() RETURNS trigger LANGUAGE plpgsql AS $$
 DECLARE
@@ -351,7 +353,9 @@ CREATE TABLE IF NOT EXISTS ins (
 CREATE INDEX IF NOT EXISTS ins_code_spentoutpoint_txid_idx ON ins (code, spent_tx_id, spent_idx) INCLUDE (input_tx_id, input_idx);
 
 
-CREATE OR REPLACE FUNCTION ins_denormalize_to_ins_outs() RETURNS trigger LANGUAGE plpgsql AS $$
+ALTER TABLE outs ADD CONSTRAINT outs_spent_by_fk FOREIGN KEY (code, input_tx_id, input_idx) REFERENCES ins (code, input_tx_id, input_idx) ON DELETE SET NULL;
+
+CREATE OR REPLACE FUNCTION ins_after_insert_trigger_proc() RETURNS trigger LANGUAGE plpgsql AS $$
 DECLARE
   r RECORD;
 BEGIN
@@ -376,11 +380,46 @@ BEGIN
 	t.seen_at
 	FROM new_ins i
 	JOIN txs t ON t.code=i.code AND t.tx_id=i.input_tx_id;
+
   RETURN NULL;
 END
 $$;
 
-CREATE OR REPLACE FUNCTION ins_denormalize_from_txs() RETURNS trigger LANGUAGE plpgsql AS $$
+
+CREATE OR REPLACE FUNCTION ins_after_insert2_trigger_proc() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE
+  r RECORD;
+BEGIN
+  IF NEW.blk_id IS NOT NULL OR (NEW.mempool IS TRUE AND NEW.replaced_by IS NULL)  THEN
+	UPDATE outs SET input_tx_id=NEW.input_tx_id, input_idx=NEW.input_idx, input_mempool=NEW.mempool
+	WHERE (code=NEW.code AND tx_id=NEW.spent_tx_id AND idx=NEW.spent_idx);
+  END IF;
+  RETURN NEW;
+END
+$$;
+
+CREATE OR REPLACE FUNCTION ins_after_update_trigger_proc() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE
+  r RECORD;
+BEGIN
+  -- Just (un)confirmed? Update the out's spent_by
+  IF NEW.blk_id IS DISTINCT FROM OLD.blk_id THEN
+	  UPDATE outs SET input_tx_id=NEW.input_tx_id, input_idx=NEW.input_idx, input_mempool=NEW.mempool
+	  WHERE (code=NEW.code AND tx_id=NEW.spent_tx_id AND idx=NEW.spent_idx);
+  END IF;
+
+  -- Kicked off mempool? If it's replaced or not in blk anymore, update outs spent_by
+  IF (NEW.mempool IS FALSE AND OLD.mempool IS TRUE) AND (NEW.replaced_by IS NOT NULL OR NEW.blk_id IS NULL) THEN
+	  UPDATE outs SET input_tx_id=NULL, input_idx=NULL, input_mempool='f'
+	  WHERE (code=NEW.code AND tx_id=NEW.spent_tx_id AND idx=NEW.spent_idx) AND (input_tx_id=NEW.input_tx_id AND input_idx=NEW.input_idx);
+  END IF;
+
+  RETURN NEW;
+END
+$$;
+
+
+CREATE OR REPLACE FUNCTION ins_before_insert_trigger_proc() RETURNS trigger LANGUAGE plpgsql AS $$
 DECLARE
   r RECORD;
 BEGIN
@@ -404,12 +443,20 @@ $$;
 
 CREATE TRIGGER ins_before_insert_trigger
   BEFORE INSERT ON ins
-  FOR EACH ROW EXECUTE PROCEDURE ins_denormalize_from_txs();
+  FOR EACH ROW EXECUTE PROCEDURE ins_before_insert_trigger_proc();
 
-CREATE TRIGGER ins_insert_trigger
+CREATE TRIGGER ins_after_update_trigger
+  BEFORE UPDATE ON ins
+  FOR EACH ROW EXECUTE PROCEDURE ins_after_update_trigger_proc();
+
+CREATE TRIGGER ins_after_insert_trigger
   AFTER INSERT ON ins
   REFERENCING NEW TABLE AS new_ins
-  FOR EACH STATEMENT EXECUTE PROCEDURE ins_denormalize_to_ins_outs();
+  FOR EACH STATEMENT EXECUTE PROCEDURE ins_after_insert_trigger_proc();
+
+CREATE TRIGGER ins_after_insert2_trigger
+  AFTER INSERT ON ins
+  FOR EACH ROW EXECUTE PROCEDURE ins_after_insert2_trigger_proc();
 
 CREATE OR REPLACE FUNCTION ins_delete_ins_outs() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
@@ -557,21 +604,14 @@ CREATE INDEX IF NOT EXISTS ins_outs_seen_at_idx ON ins_outs (seen_at);
 
 -- Returns current UTXOs
 -- Warning: It also returns the UTXO that are confirmed but spent in the mempool, as well as immature utxos.
---          If you want the available UTXOs which can be spent use 'WHERE spent_mempool IS FALSE AND immature IS FALSE'.
+--          If you want the available UTXOs which can be spent use 'WHERE input_mempool IS FALSE AND immature IS FALSE'.
 CREATE OR REPLACE VIEW utxos AS
-WITH current_ins AS
-(
-	SELECT i.* FROM ins i
-	WHERE i.blk_id IS NOT NULL OR (i.mempool IS TRUE AND i.replaced_by IS NULL)
-)
-SELECT o.*, i.input_tx_id spending_tx_id, i.input_idx spending_idx, (i.mempool IS TRUE) spent_mempool FROM outs o
-LEFT JOIN current_ins i ON o.code = i.code AND o.tx_id = i.spent_tx_id AND o.idx = i.spent_idx
-WHERE o.spent_blk_id IS NULL AND (o.blk_id IS NOT NULL OR (o.mempool IS TRUE AND o.replaced_by IS NULL)) AND
-	  (i.input_tx_id IS NULL OR i.mempool IS TRUE);
+SELECT o.* FROM outs o
+WHERE (o.blk_id IS NOT NULL OR (o.mempool IS TRUE AND o.replaced_by IS NULL)) AND (o.input_tx_id IS NULL OR o.input_mempool IS TRUE);
 
 -- Returns UTXOs with their associate wallet
 -- Warning: It also returns the UTXO that are confirmed but spent in the mempool, as well as immature utxos.
---          If you want the available UTXOs which can be spent use 'WHERE spent_mempool IS FALSE AND immature IS FALSE'.
+--          If you want the available UTXOs which can be spent use 'WHERE input_mempool IS FALSE AND immature IS FALSE'.
 CREATE OR REPLACE VIEW wallets_utxos AS
 SELECT q.wallet_id, u.* FROM utxos u,
 LATERAL (SELECT ws.wallet_id, ws.code, ws.script
@@ -586,11 +626,11 @@ SELECT
 	code,
 	asset_id,
 	-- The balance if all unconfirmed transactions, non-conflicting, were finally confirmed
-	COALESCE(SUM(value) FILTER (WHERE spent_mempool IS FALSE), 0) unconfirmed_balance,
+	COALESCE(SUM(value) FILTER (WHERE input_mempool IS FALSE), 0) unconfirmed_balance,
 	-- The balance only taking into accounts confirmed transactions
 	COALESCE(SUM(value) FILTER (WHERE blk_id IS NOT NULL), 0) confirmed_balance,
 	-- Same as unconfirmed_balance, removing immature utxos (utxos from a miner aged less than 100 blocks)
-	COALESCE(SUM(value) FILTER (WHERE spent_mempool IS FALSE AND immature IS FALSE), 0) available_balance,
+	COALESCE(SUM(value) FILTER (WHERE input_mempool IS FALSE AND immature IS FALSE), 0) available_balance,
 	-- The total value of immature utxos (utxos from a miner aged less than 100 blocks)
 	COALESCE(SUM(value) FILTER (WHERE immature IS TRUE), 0) immature_balance
 FROM wallets_utxos

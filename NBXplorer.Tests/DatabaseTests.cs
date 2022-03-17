@@ -50,7 +50,7 @@ namespace NBXplorer.Tests
 				"	JOIN scripts s ON s.code=ws.code AND s.script=ws.script " +
 				"   WHERE ws.code=r.code AND ws.script=r.script) ts;", 50);
 			await Benchmark(conn, "SELECT o.tx_id, o.idx, o.value, o.script FROM (VALUES ('BTC', 'hash', 5), ('BTC', 'hash', 5), ('BTC', 'hash', 5))  r (code, tx_id, idx) JOIN outs o USING (code, tx_id, idx);", 50);
-			await Benchmark(conn, "SELECT blk_height, tx_id, wu.idx, value, script, nbxv1_get_keypath(d.metadata, ds.idx) AS keypath, d.metadata->>'feature' feature, mempool, spent_mempool, seen_at FROM wallets_utxos wu JOIN descriptors_scripts ds USING (code, script) JOIN descriptors d USING (code, descriptor) WHERE code='BTC' AND wallet_id='WHALE' AND immature IS FALSE ", 50);
+			await Benchmark(conn, "SELECT blk_height, tx_id, wu.idx, value, script, nbxv1_get_keypath(d.metadata, ds.idx) AS keypath, d.metadata->>'feature' feature, mempool, input_mempool, seen_at FROM wallets_utxos wu JOIN descriptors_scripts ds USING (code, script) JOIN descriptors d USING (code, descriptor) WHERE code='BTC' AND wallet_id='WHALE' AND immature IS FALSE ", 50);
 			await Benchmark(conn, "SELECT * FROM get_wallets_histogram('WHALE', 'BTC', '', '2022-01-01'::timestamptz, '2022-02-01'::timestamptz, interval '1 day');", 50);
 			await Benchmark(conn, "SELECT * FROM get_wallets_recent('WHALE', 100, 0);", 50);
 		}
@@ -372,8 +372,7 @@ namespace NBXplorer.Tests
 			await conn.ExecuteAsync("UPDATE blks SET confirmed='f' WHERE blk_id='b1';");
 
 			Assert.Null(conn.ExecuteScalar<string>("SELECT blk_id FROM txs WHERE tx_id='t1'"));
-			await conn.ExecuteAsync("UPDATE blks SET confirmed='t';" +
-									"UPDATE blks SET confirmed='t' WHERE blk_id='b1';");
+			await conn.ExecuteAsync("UPDATE blks SET confirmed='t' WHERE blk_id='b1';");
 			Assert.Equal("b1", conn.ExecuteScalar<string>("SELECT blk_id FROM txs WHERE tx_id='t1'"));
 			await conn.ExecuteAsync("UPDATE blks SET confirmed='f' WHERE blk_id='b1';");
 
@@ -580,8 +579,8 @@ namespace NBXplorer.Tests
 			// This will check that there is 4 utxo in total
 			// 3 for bobs, 1 for alice, then check what happen after
 			// orphaning b2 and b1
-			Assert.Single(await conn.QueryAsync("SELECT * FROM wallets_utxos WHERE wallet_id='Alice' AND spending_tx_id IS NULL;"));
-			var utxos = (await conn.QueryAsync("SELECT * FROM wallets_utxos WHERE wallet_id='Bob' AND spending_tx_id IS NULL;")).ToList();
+			Assert.Single(await conn.QueryAsync("SELECT * FROM wallets_utxos WHERE wallet_id='Alice' AND input_tx_id IS NULL;"));
+			var utxos = (await conn.QueryAsync("SELECT * FROM wallets_utxos WHERE wallet_id='Bob' AND input_tx_id IS NULL;")).ToList();
 			Assert.Equal(3, utxos.Count);
 
 			var balance = await conn.QueryFirstOrDefaultAsync("SELECT * FROM wallets_balances WHERE wallet_id='Alice';");
@@ -606,7 +605,7 @@ namespace NBXplorer.Tests
 			Assert.Equal(40, balance.confirmed_balance);
 			Assert.Equal(40 + 20 + 39, balance.available_balance);
 
-			Assert.Single(await conn.QueryAsync("SELECT * FROM wallets_utxos WHERE wallet_id='Alice' AND spent_mempool IS FALSE AND immature IS FALSE;"));
+			Assert.Single(await conn.QueryAsync("SELECT * FROM wallets_utxos WHERE wallet_id='Alice' AND input_mempool IS FALSE AND immature IS FALSE;"));
 
 			await conn.ExecuteAsync($"UPDATE blks SET confirmed='f' WHERE blk_id='{b1}';");
 
