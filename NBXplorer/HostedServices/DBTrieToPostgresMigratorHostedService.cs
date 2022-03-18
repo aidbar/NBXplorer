@@ -366,7 +366,8 @@ namespace NBXplorer.HostedServices
 					foreach (var gh in gettingHeaders)
 					{
 						var blockHeader = await gh;
-						update.Add(blockHeader);
+						if (blockHeader is not null)
+							update.Add(blockHeader);
 					}
 					await conn.ExecuteAsync("INSERT INTO blks VALUES (@code, @blk_id, @height, @prev_id, 't')", update);
 				}
@@ -560,8 +561,11 @@ namespace NBXplorer.HostedServices
 
 		private async Task<UpdateBlock> GetBlockHeaderAsync(NBitcoin.RPC.RPCClient rpc, uint256 blk)
 		{
-			var header = await rpc.SendCommandAsync("getblockheader", new[] { blk.ToString() });
-			if (header.Result is null)
+			var header = await rpc.SendCommandAsync(new NBitcoin.RPC.RPCRequest("getblockheader", new[] { blk.ToString() })
+			{
+				ThrowIfRPCError = false
+			});
+			if (header.Result is null || header.Error is not null)
 				return null;
 			var response = header.Result;
 			var confs = response["confirmations"].Value<long>();
