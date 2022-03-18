@@ -283,11 +283,16 @@ namespace NBXplorer.HostedServices
 			{
 				Logger.LogInformation($"{network.CryptoCode}: Migrating available keys to postgres...");
 				using var tx = await conn.BeginTransactionAsync();
-				var batch = new List<UpdateUsedScript>(100);
+				var batch = new List<UpdateUsedScript>(1000);
 				using var legacyTx = await legacyRepo.engine.OpenTransaction();
 				var availableTable = legacyTx.GetTable($"{legacyRepo._Suffix}AvailableKeys");
+				var total = await availableTable.GetRecordCount();
+				int migrated = 0;
 				await foreach (var row in availableTable.Enumerate())
 				{
+					migrated++;
+					if (migrated % 10_000 == 0)
+						Logger.LogInformation($"{network.CryptoCode}: Progress: " + (int)(((double)migrated / (double)total) * 100.0) + "%");
 					using (row)
 					{
 						var s = Encoding.UTF8.GetString(row.Key.Span).Split('-');
@@ -296,7 +301,7 @@ namespace NBXplorer.HostedServices
 						var key = postgresRepo.GetDescriptorKey(scheme, feature);
 						var idx = int.Parse(s[^1]);
 						batch.Add(new UpdateUsedScript(key.code, key.descriptor, idx));
-						if (batch.Count == 100)
+						if (batch.Count >= 1000)
 						{
 							await conn.ExecuteAsync("UPDATE descriptors_scripts SET used='f' WHERE code=@code AND descriptor=@descriptor AND idx=@idx", batch);
 							batch.Clear();
