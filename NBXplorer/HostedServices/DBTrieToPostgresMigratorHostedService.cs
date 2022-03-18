@@ -444,18 +444,20 @@ namespace NBXplorer.HostedServices
 
 						foreach (var o in tt.GetReceivedOutputs())
 						{
-							long value = 0;
-							string assetId = string.Empty;
+							long value;
+							string assetId;
 							if (o.Value is Money m)
 							{
 								value = m.Satoshi;
 								assetId = "";
 							}
-							if (o.Value is AssetMoney am)
+							else if (o.Value is AssetMoney am)
 							{
 								value = am.Quantity;
 								assetId = am.AssetId.ToString();
 							}
+							else
+								continue;
 							batch.Add(new InsertOuts(
 								network.CryptoCode,
 								tt.TransactionHash.ToString(),

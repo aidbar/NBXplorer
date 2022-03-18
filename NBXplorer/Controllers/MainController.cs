@@ -1093,6 +1093,8 @@ namespace NBXplorer.Controllers
 			});
 
 			var derivationTrackedSource = new DerivationSchemeTrackedSource(derivation);
+
+			await TrackWallet(cryptoCode, derivation, null);
 			List<Task> saveMetadata = new List<Task>();
 			if (request.SavePrivateKeys)
 			{
@@ -1103,13 +1105,11 @@ namespace NBXplorer.Controllers
 					repo.SaveMetadata(derivationTrackedSource, WellknownMetadataKeys.AccountHDKey, accountKey)
 				});
 			}
-
 			var accountKeyPath = new RootedKeyPath(masterKey.GetPublicKey().GetHDFingerPrint(), keyPath);
 			saveMetadata.Add(repo.SaveMetadata(derivationTrackedSource, WellknownMetadataKeys.AccountKeyPath, accountKeyPath));
 			saveMetadata.Add(repo.SaveMetadata<string>(derivationTrackedSource, WellknownMetadataKeys.ImportAddressToRPC, request.ImportKeysToRPC.ToString()));
 			await Task.WhenAll(saveMetadata.ToArray());
 
-			await TrackWallet(cryptoCode, derivation, null);
 			return Json(new GenerateWalletResponse()
 			{
 				MasterHDKey = masterKey,
