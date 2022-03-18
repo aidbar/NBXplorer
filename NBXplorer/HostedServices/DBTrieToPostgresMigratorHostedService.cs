@@ -333,10 +333,11 @@ namespace NBXplorer.HostedServices
 					}
 				}
 
-				var progressBlocks = (await legacyRepo.GetIndexProgress(legacyTx))?.Blocks;
-				if (progressBlocks != null)
+				var indexProgress = await legacyRepo.GetIndexProgress(legacyTx);
+				await postgresRepo.SetIndexProgress(conn, indexProgress);
+				if (indexProgress?.Blocks is not null)
 				{
-					foreach (var b in progressBlocks)
+					foreach (var b in indexProgress.Blocks)
 						blocksToFetch.Add(b);
 				}
 				Logger.LogInformation($"{network.CryptoCode}: Blocks to import: " + blocksToFetch.Count);

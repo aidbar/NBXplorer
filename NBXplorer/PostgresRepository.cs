@@ -851,6 +851,10 @@ namespace NBXplorer
 		public async Task SetIndexProgress(BlockLocator locator)
 		{
 			await using var conn = await connectionFactory.CreateConnection();
+			await SetIndexProgress(conn, locator);
+		}
+		internal async Task SetIndexProgress(DbConnection conn, BlockLocator locator)
+		{
 			if (locator is not null)
 			{
 				await conn.ExecuteAsync(
