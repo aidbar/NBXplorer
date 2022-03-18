@@ -11,7 +11,7 @@ namespace NBXplorer.Configuration
 {
     public static class ConfigurationExtensions
     {
-		public static bool ISNBXplorerV2(this IConfiguration configuration)
+		public static bool IsPostgres(this IConfiguration configuration)
 		{
 			return configuration.GetOrDefault<string>("POSTGRES", null) is string;
 		}

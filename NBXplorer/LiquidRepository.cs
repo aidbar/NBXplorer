@@ -222,7 +222,7 @@ namespace NBXplorer
 			trackedTransaction.Unblind(((ElementsTransactionMatchData)tx).Unblind);
 			return trackedTransaction;
 		}
-		protected override ITrackedTransactionSerializable CreateBitcoinSerializableTrackedTransaction(TrackedTransactionKey trackedTransactionKey)
+		internal override ITrackedTransactionSerializable CreateBitcoinSerializableTrackedTransaction(TrackedTransactionKey trackedTransactionKey)
 		{
 			return new ElementsTransactionMatchData(trackedTransactionKey);
 		}

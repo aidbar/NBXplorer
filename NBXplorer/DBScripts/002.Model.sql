@@ -18,7 +18,7 @@ CREATE TABLE IF NOT EXISTS blks (
   code TEXT NOT NULL,
   blk_id TEXT NOT NULL,
   height BIGINT,
-  prev_id TEXT NOT NULL,
+  prev_id TEXT,
   confirmed BOOLEAN DEFAULT 'f',
   indexed_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (code, blk_id));
@@ -700,6 +700,7 @@ $$  LANGUAGE SQL STABLE;
 -- Useful view to see what has going on recently in a wallet. Doesn't depends on wallets_history.
 CREATE OR REPLACE FUNCTION get_wallets_recent(in_wallet_id TEXT, in_limit INT, in_offset INT)
 RETURNS TABLE(wallet_id TEXT, code TEXT, asset_id TEXT, tx_id TEXT, seen_at TIMESTAMPTZ, balance_change BIGINT, balance_total BIGINT) AS $$
+  -- We need to materialize, if too many utxos, postgres just call this one over and over
   WITH this_balances AS MATERIALIZED (
 	  SELECT code, asset_id, unconfirmed_balance FROM wallets_balances
 	  WHERE wallet_id=in_wallet_id

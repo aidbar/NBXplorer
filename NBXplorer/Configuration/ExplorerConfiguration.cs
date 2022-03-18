@@ -213,7 +213,7 @@ namespace NBXplorer.Configuration
 			RabbitMqPassword = config.GetOrDefault<string>("rmqpass", "");
 			RabbitMqTransactionExchange = config.GetOrDefault<string>("rmqtranex", "");
 			RabbitMqBlockExchange = config.GetOrDefault<string>("rmqblockex", "");
-			UseDatabase = config.ISNBXplorerV2();
+			UseDatabase = config.IsPostgres();
 			return this;
 		}
 
@@ -284,5 +284,6 @@ namespace NBXplorer.Configuration
         public string RabbitMqBlockExchange { get; set; }
 
 		public KeyPathTemplate CustomKeyPathTemplate { get; set; }
-    }
+		public bool MigrateToPostgres { get; set; }
+	}
 }

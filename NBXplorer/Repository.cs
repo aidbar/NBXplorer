@@ -58,6 +58,10 @@ namespace NBXplorer
 		{
 			return _Configuration.ChainConfigurations.FirstOrDefault(c => c.CryptoCode == net.CryptoCode);
 		}
+		public IEnumerable<Repository> GetRepositories()
+		{
+			return _Repositories.Values;
+		}
 
 		public IRepository GetRepository(string cryptoCode)
 		{
@@ -70,7 +74,39 @@ namespace NBXplorer
 		}
 
 		TaskCompletionSource<bool> _StartCompletion = new TaskCompletionSource<bool>();
+
+		public bool Exists()
+		{
+			return Directory.Exists(GetDatabasePath());
+		}
+
+		public string GetDatabasePath()
+		{
+			return Path.Combine(_Configuration.DataDir, "db");
+		}
+
 		public Task StartCompletion => _StartCompletion.Task;
+
+		public bool MigrationMode { get; set; }
+		public enum MigrationState
+		{
+			NotStarted,
+			InProgress,
+			Done
+		}
+		public MigrationState GetMigrationState()
+		{
+			string file = GetMigrationLockPath();
+			if (!File.Exists(file))
+				return MigrationState.NotStarted;
+			return Enum.Parse<MigrationState>(File.ReadAllText(file));
+		}
+
+		public string GetMigrationLockPath()
+		{
+			return Path.Combine(_Configuration.DataDir, "db", "migration_lock");
+		}
+
 		public async Task StartAsync(CancellationToken cancellationToken)
 		{
 			try
@@ -78,6 +114,19 @@ namespace NBXplorer
 				var directory = Path.Combine(_Configuration.DataDir, "db");
 				if (!Directory.Exists(directory))
 					Directory.CreateDirectory(directory);
+
+				if (!MigrationMode)
+				{
+					var migrationState = GetMigrationState();
+					if (migrationState == MigrationState.InProgress)
+						throw new ConfigException(
+							"A migration is in progress. " +
+							$"A migration started with --automigrate and --postgres and is still pending. If you want to use the legacy database, to prevent corruptions, please delete the previous half-migrated postgres database, then delete the file '{GetMigrationLockPath()}'.");
+					if (migrationState == MigrationState.Done)
+						throw new ConfigException(
+							"The database has been migrated to postgres. " +
+							$"A migration started with --automigrate and --postgres and has completed. If you want to use the legacy database, to prevent corruptions, please delete the migrated postgres database, then delete the file '{GetMigrationLockPath()}'.");
+				}
 
 				_Engine = await OpenEngine(directory, cancellationToken);
 				if (_Configuration.DBCache > 0)
@@ -470,7 +519,7 @@ namespace NBXplorer
 			}
 		}
 
-		DBTrie.DBTrieEngine engine;
+		internal DBTrie.DBTrieEngine engine;
 		internal Repository(DBTrie.DBTrieEngine engine, NBXplorerNetwork network, KeyPathTemplates keyPathTemplates, RPCClient rpc)
 		{
 			if (network == null)
@@ -488,6 +537,10 @@ namespace NBXplorer
 		public async Task<BlockLocator> GetIndexProgress()
 		{
 			using var tx = await engine.OpenTransaction();
+			return await GetIndexProgress(tx);
+		}
+		internal async Task<BlockLocator> GetIndexProgress(DBTrie.Transaction tx)
+		{
 			using var existingRow = await tx.GetTable($"{_Suffix}IndexProgress").Get("");
 			if (existingRow == null)
 				return null;
@@ -899,7 +952,7 @@ namespace NBXplorer
 			return saved.ToArray();
 		}
 
-		private static SavedTransaction ToSavedTransaction(Network network, ReadOnlyMemory<byte> key, ReadOnlyMemory<byte> value)
+		internal static SavedTransaction ToSavedTransaction(Network network, ReadOnlyMemory<byte> key, ReadOnlyMemory<byte> value)
 		{
 			SavedTransaction t = new SavedTransaction();
 			if (key.Length > 32)
@@ -950,7 +1003,7 @@ namespace NBXplorer
 			get; private set;
 		}
 
-		private T ToObject<T>(ReadOnlyMemory<byte> value)
+		internal T ToObject<T>(ReadOnlyMemory<byte> value)
 		{
 			var result = Serializer.ToObject<T>(Unzip(value));
 
@@ -980,7 +1033,7 @@ namespace NBXplorer
 			}
 			return ms.ToArray();
 		}
-		private string Unzip(ReadOnlyMemory<byte> bytes)
+		internal string Unzip(ReadOnlyMemory<byte> bytes)
 		{
 			var segment = DBTrie.PublicExtensions.GetUnderlyingArraySegment(bytes);
 			MemoryStream ms = new MemoryStream(segment.Array, segment.Offset, segment.Count);
@@ -1108,7 +1161,7 @@ namespace NBXplorer
 			}
 		}
 
-		TrackedTransaction ToTrackedTransaction(ITrackedTransactionSerializable tx, TrackedSource trackedSource)
+		internal TrackedTransaction ToTrackedTransaction(ITrackedTransactionSerializable tx, TrackedSource trackedSource)
 		{
 			var trackedTransaction = CreateTrackedTransaction(trackedSource, tx);
 			trackedTransaction.Inserted = tx.TickCount == 0 ? NBitcoin.Utils.UnixTimeToDateTime(0) : new DateTimeOffset((long)tx.TickCount, TimeSpan.Zero);
@@ -1417,7 +1470,7 @@ namespace NBXplorer
 						? CreateTrackedTransaction(trackedSource, tx.Key, tx.GetCoins(), tx.KnownKeyPathMapping)
 						: CreateTrackedTransaction(trackedSource, tx.Key, tx.Transaction, tx.KnownKeyPathMapping);
 		}
-		protected virtual ITrackedTransactionSerializable CreateBitcoinSerializableTrackedTransaction(TrackedTransactionKey trackedTransactionKey)
+		internal virtual ITrackedTransactionSerializable CreateBitcoinSerializableTrackedTransaction(TrackedTransactionKey trackedTransactionKey)
 		{
 			return new TrackedTransaction.TransactionMatchData(trackedTransactionKey);
 		}

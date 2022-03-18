@@ -143,13 +143,13 @@ namespace NBXplorer
 		public async Task<bool> SetMetadata<TMetadata>(string walletId, string key, TMetadata value) where TMetadata : class
 		{
 			if (value is null)
-				return await Connection.ExecuteAsync("UPDATE wallets w SET metadata=(w.metadata - @key) WHERE wallet_id=@walletId", new { walletId, key }) == 1;
+				return await Connection.ExecuteAsync("DELETE FROM nbxv1_metadata WHERE wallet_id=@walletId AND key=@key", new { walletId, key }) == 1;
 			else
-				return await Connection.ExecuteAsync("UPDATE wallets w SET metadata=jsonb_set(COALESCE(w.metadata,'{}'), array[@key], @data::jsonb) WHERE wallet_id=@walletId", new { walletId, key, data = Network.Serializer.ToString(value) }) == 1;
+				return await Connection.ExecuteAsync("INSERT INTO nbxv1_metadata VALUES (@walletId, @key, @data::JSONB) ON CONFLICT (wallet_id, key) DO UPDATE SET data=EXCLUDED.data;", new { walletId, key, data = Network.Serializer.ToString(value) }) == 1;
 		}
 		public async Task<TMetadata?> GetMetadata<TMetadata>(string walletId, string key) where TMetadata : class
 		{
-			var result = await Connection.ExecuteScalarAsync<string?>("SELECT metadata->@key FROM wallets WHERE wallet_id=@walletId", new { walletId, key });
+			var result = await Connection.ExecuteScalarAsync<string?>("SELECT data FROM nbxv1_metadata WHERE wallet_id=@walletId AND key=@key", new { walletId, key });
 			if (result is null)
 				return null;
 			return Network.Serializer.ToObject<TMetadata>(result);

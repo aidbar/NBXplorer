@@ -165,7 +165,7 @@ namespace NBXplorer
 		}
 
 		public record DescriptorKey(string code, string descriptor);
-		DescriptorKey GetDescriptorKey(DerivationStrategyBase strategy, DerivationFeature derivationFeature)
+		internal DescriptorKey GetDescriptorKey(DerivationStrategyBase strategy, DerivationFeature derivationFeature)
 		{
 			var hash = Encoders.Hex.EncodeData(Hashes.RIPEMD160(new UTF8Encoding(false).GetBytes($"{Network.CryptoCode}|{strategy}|{derivationFeature}")));
 			return new DescriptorKey(Network.CryptoCode, hash);
@@ -637,7 +637,12 @@ namespace NBXplorer
 		record KeyInfoInsert(string code, string descriptor, string script, string address, long? idx, string walletid, string redeem);
 		public async Task SaveKeyInformations(KeyPathInformation[] keyPathInformations)
 		{
-			await using var connection = await connectionFactory.CreateConnectionHelper(Network);
+			await using var connection = await connectionFactory.CreateConnection();
+			await SaveKeyInformations(connection, keyPathInformations);
+		}
+
+		internal async Task SaveKeyInformations(DbConnection connection, KeyPathInformation[] keyPathInformations)
+		{
 			var inserts = new List<KeyInfoInsert>();
 			foreach (var ki in keyPathInformations)
 			{
@@ -668,13 +673,13 @@ namespace NBXplorer
 			}
 
 			var hdParameters = inserts.Where(i => i.descriptor is not null).ToList();
-			await connection.Connection.ExecuteAsync(
+			await connection.ExecuteAsync(
 				"INSERT INTO scripts VALUES (@code, @script, @address) ON CONFLICT DO NOTHING;" +
 				"INSERT INTO descriptors_scripts VALUES (@code, @descriptor, @idx, @script, @redeem::JSONB, 't') ON CONFLICT (code, descriptor, idx) DO UPDATE SET used='t';" +
 				"INSERT INTO wallets_scripts VALUES (@code, @script, @walletid, @descriptor, @idx) ON CONFLICT DO NOTHING;", hdParameters);
 
 			var singleParameters = inserts.Where(i => i.descriptor is null).ToList();
-			await connection.Connection.ExecuteAsync(
+			await connection.ExecuteAsync(
 				"INSERT INTO scripts VALUES (@code, @script, @address) ON CONFLICT DO NOTHING;" +
 				"INSERT INTO wallets_scripts VALUES (@code, @script, @walletid, @descriptor, @idx) ON CONFLICT DO NOTHING;", singleParameters);
 		}
@@ -763,7 +768,12 @@ namespace NBXplorer
 		{
 			await using var helper = await GetConnection();
 			var json = evt.ToJObject(Serializer.Settings).ToString();
-			var id = helper.Connection.ExecuteScalar<long>("INSERT INTO nbxv1_evts (code, type, data) VALUES (@code, @type, @data::json) RETURNING id", new { code = Network.CryptoCode, type = evt.EventType, data = json });
+			var id = helper.Connection.ExecuteScalar<long>(
+				"WITH cte AS (" +
+				"INSERT INTO nbxv1_evts_ids AS ei VALUES (@code, 1) ON CONFLICT (code) DO UPDATE SET curr_id=ei.curr_id+1" +
+				"RETURNING curr_id" +
+				")" +
+				"INSERT INTO nbxv1_evts (code, id, type, data) VALUES (@code, (SELECT * FROM cte), @type, @data::json) RETURNING id", new { code = Network.CryptoCode, type = evt.EventType, data = json });
 			return id;
 		}
 

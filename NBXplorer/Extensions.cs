@@ -150,17 +150,24 @@ namespace NBXplorer
 			services.TryAddSingleton<ChainProvider>();
 
 			services.TryAddSingleton<CookieRepository>();
-			if (configuration.ISNBXplorerV2())
+			if (configuration.IsPostgres())
 			{
-				services.TryAddSingleton<IRepositoryProvider, PostgresRepositoryProvider>();
 				services.AddHostedService<HostedServices.DatabaseSetupHostedService>();
+				services.AddSingleton<IHostedService, IRepositoryProvider>(o => o.GetRequiredService<IRepositoryProvider>());
+				services.TryAddSingleton<IRepositoryProvider, PostgresRepositoryProvider>();
 				services.AddSingleton<DbConnectionFactory>();
+
+				if (configuration.GetOrDefault("AUTOMIGRATE", false))
+				{
+					services.AddHostedService<HostedServices.DBTrieToPostgresMigratorHostedService>();
+					services.TryAddSingleton<RepositoryProvider>();
+				}
 			}
 			else
 			{
+				services.AddSingleton<IHostedService, IRepositoryProvider>(o => o.GetRequiredService<IRepositoryProvider>());
 				services.TryAddSingleton<IRepositoryProvider, RepositoryProvider>();
 			}
-			services.AddSingleton<IHostedService, IRepositoryProvider>(o => o.GetRequiredService<IRepositoryProvider>());
 			services.TryAddSingleton<EventAggregator>();
 			services.TryAddSingleton<AddressPoolService>();
 			services.AddSingleton<IHostedService, AddressPoolService>(o => o.GetRequiredService<AddressPoolService>());
