@@ -146,13 +146,18 @@ namespace NBXplorer.HostedServices
 				Logger.LogInformation($"{network.CryptoCode}: Migrating scripts to postgres...");
 				using (var tx = await conn.BeginTransactionAsync())
 				{
-					List<KeyPathInformation> batch = new List<KeyPathInformation>(100);
+					List<KeyPathInformation> batch = new List<KeyPathInformation>(1000);
 					HashSet<PostgresRepository.WalletKey> walletKeys = new HashSet<PostgresRepository.WalletKey>();
 					List<InsertDescriptor> descriptors = new List<InsertDescriptor>();
 					using var legacyTx = await legacyRepo.engine.OpenTransaction();
 					var scriptsTable = legacyTx.GetTable($"{legacyRepo._Suffix}Scripts");
+					var total = await scriptsTable.GetRecordCount();
+					int migrated = 0;
 					await foreach (var row in scriptsTable.Enumerate())
 					{
+						migrated++;
+						if (migrated % 10_000 == 0)
+							Logger.LogInformation($"{network.CryptoCode}: Progress: " + (int)(((double)migrated / (double)total) * 100.0) + "%");
 						using (row)
 						{
 							var keyInfo = legacyRepo.ToObject<KeyPathInformation>(await row.ReadValue())
@@ -172,7 +177,7 @@ namespace NBXplorer.HostedServices
 								})));
 							}
 							walletKeys.Add(postgresRepo.GetWalletKey(keyInfo.TrackedSource));
-							if (batch.Count == 100)
+							if (batch.Count >= 1000)
 							{
 								await CreateWalletAndDescriptor(conn, walletKeys, descriptors);
 								await postgresRepo.SaveKeyInformations(conn, batch.ToArray());
@@ -224,7 +229,7 @@ namespace NBXplorer.HostedServices
 							var trackedSource = hashToTrackedSource[s[0]];
 							var key = s[1];
 							batch.Add(new InsertMetadata(postgresRepo.GetWalletKey(trackedSource).wid, key, v.ToString(Formatting.None)));
-							if (batch.Count == 100)
+							if (batch.Count >= 100)
 							{
 								await conn.ExecuteAsync("INSERT INTO nbxv1_metadata VALUES (@wallet_id, @key, @value::JSONB)", batch);
 								batch.Clear();
@@ -259,7 +264,7 @@ namespace NBXplorer.HostedServices
 							uint value = System.Buffers.Binary.BinaryPrimitives.ReadUInt32BigEndian(v.Span);
 							value = value & ~0x8000_0000U;
 							batch.Add(new UpdateNextIndex(key.code, key.descriptor, value + 1));
-							if (batch.Count == 100)
+							if (batch.Count >= 100)
 							{
 								await conn.ExecuteAsync("UPDATE descriptors SET next_idx=@next_idx WHERE code=@code AND descriptor=@descriptor", batch);
 								batch.Clear();
@@ -391,7 +396,7 @@ namespace NBXplorer.HostedServices
 							batchBlocksTxs.Add(new UpdateBlockTransaction(network.CryptoCode, savedTx.Transaction.GetHash().ToString(), savedTx.BlockHash.ToString()));
 						}
 						batchTxs.Add(new UpdateTransaction(network.CryptoCode, savedTx.Transaction.GetHash().ToString(), savedTx.Transaction.ToBytes(), savedTx.Timestamp.UtcDateTime));
-						if (batchTxs.Count == 1000)
+						if (batchTxs.Count >= 1000)
 						{
 							await conn.ExecuteAsync(
 								"INSERT INTO txs AS t (code, tx_id, raw, seen_at) VALUES (@code, @tx_id, @raw, @seen_at) " +
