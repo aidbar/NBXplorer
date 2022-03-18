@@ -527,6 +527,7 @@ namespace NBXplorer.HostedServices
 					"SELECT @code, @input_tx_id, @input_idx, @spent_tx_id, @spent_idx FROM outs " +
 					"WHERE code=@code AND tx_id=@spent_tx_id AND idx=@spent_idx " +
 					"ON CONFLICT DO NOTHING;", batch);
+				await conn.ExecuteAsync("ANALYZE;");
 				progress.TrackedTransactionsInputsMigrated = true;
 				await SaveProgress(network, conn, progress);
 				await tx.CommitAsync();
