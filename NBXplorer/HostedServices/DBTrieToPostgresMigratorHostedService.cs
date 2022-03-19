@@ -3,7 +3,9 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using NBitcoin;
+using NBitcoin.RPC;
 using NBXplorer.Altcoins.Liquid;
+using NBXplorer.Configuration;
 using NBXplorer.DerivationStrategy;
 using NBXplorer.Models;
 using Newtonsoft.Json;
@@ -38,13 +40,15 @@ namespace NBXplorer.HostedServices
 			ILogger<DBTrieToPostgresMigratorHostedService> logger,
 			IConfiguration configuration,
 			KeyPathTemplates keyPathTemplates,
-			RPCClientProvider rpcClients)
+			RPCClientProvider rpcClients,
+			ExplorerConfiguration explorerConfiguration)
 		{
 			LegacyRepositoryProvider = repositoryProvider;
 			Logger = logger;
 			Configuration = configuration;
 			KeyPathTemplates = keyPathTemplates;
 			RpcClients = rpcClients;
+			ExplorerConfiguration = explorerConfiguration;
 			PostgresRepositoryProvider = (PostgresRepositoryProvider)postgresRepositoryProvider;
 		}
 
@@ -53,6 +57,7 @@ namespace NBXplorer.HostedServices
 		public IConfiguration Configuration { get; }
 		public KeyPathTemplates KeyPathTemplates { get; }
 		public RPCClientProvider RpcClients { get; }
+		public ExplorerConfiguration ExplorerConfiguration { get; }
 		public PostgresRepositoryProvider PostgresRepositoryProvider { get; }
 
 		bool started;
@@ -344,33 +349,29 @@ namespace NBXplorer.HostedServices
 				}
 
 				var indexProgress = await legacyRepo.GetIndexProgress(legacyTx);
-				await postgresRepo.SetIndexProgress(conn, indexProgress);
 				if (indexProgress?.Blocks is not null)
 				{
 					foreach (var b in indexProgress.Blocks)
 						blocksToFetch.Add(b);
 				}
 				Logger.LogInformation($"{network.CryptoCode}: Blocks to import: " + blocksToFetch.Count);
+				IGetBlockHeaders getBlocks = await GetBlockProvider(network);
 				foreach (var batch in blocksToFetch.Batch(500))
 				{
 					var rpc = RpcClients.GetRPCClient(network);
-					rpc = rpc.PrepareBatch();
-					List<Task<UpdateBlock>> gettingHeaders = new List<Task<UpdateBlock>>();
-					foreach (var blk in batch)
-					{
-						gettingHeaders.Add(GetBlockHeaderAsync(rpc, blk));
-					}
-					await rpc.SendBatchAsync();
-
-					List<UpdateBlock> update = new List<UpdateBlock>();
-					foreach (var gh in gettingHeaders)
-					{
-						var blockHeader = await gh;
-						if (blockHeader is not null)
-							update.Add(blockHeader);
-					}
+					var update = await getBlocks.GetUpdateBlocks(batch);
 					await conn.ExecuteAsync("INSERT INTO blks VALUES (@code, @blk_id, @height, @prev_id, 't')", update);
 				}
+
+				// Here, we just make sure the index progress we save only have confirmed blocks.
+				// differences may happen if loading from slim-chain when the node crashed.
+				var confirmedBlocks = await getBlocks.GetUpdateBlocks(indexProgress.Blocks);
+				var locator = new BlockLocator();
+				foreach (var b in confirmedBlocks)
+				{
+					locator.Blocks.Add(new uint256(b.blk_id));
+				}
+				await postgresRepo.SetIndexProgress(conn, locator);
 
 				progress.BlocksMigrated = true;
 				await SaveProgress(network, conn, progress);
@@ -546,6 +547,39 @@ namespace NBXplorer.HostedServices
 			}
 		}
 
+		private async Task<IGetBlockHeaders> GetBlockProvider(NBXplorerNetwork network)
+		{
+			IGetBlockHeaders getBlocks = null;
+			using (var token = new CancellationTokenSource(20_000))
+			{
+				try
+				{
+					var rpc = RpcClients.GetRPCClient(network);
+					await RPCArgs.TestRPCAsync(network, rpc, token.Token);
+					getBlocks = new RPCGetBlockHeaders(rpc);
+					Logger.LogInformation($"{network.CryptoCode}: Getting blocks from RPC...");
+				}
+				catch (Exception ex)
+				{
+					Logger.LogInformation($"{network.CryptoCode}: Unable to access the full node for block import, fall back the local chain-slim.dat. ({ex.Message})");
+					var suffix = network.CryptoCode == "BTC" ? "" : network.CryptoCode;
+					var slimCachePath = Path.Combine(ExplorerConfiguration.DataDir, $"{suffix}chain-slim.dat");
+					if (!File.Exists(slimCachePath))
+						throw new ConfigException($"Impossible to get the blocks from RPC, nor from {slimCachePath}");
+
+					Logger.LogInformation($"{network.CryptoCode}: Getting blocks from chain-slim.dat...");
+					using (var file = new FileStream(slimCachePath, FileMode.Open, FileAccess.Read, FileShare.None, 1024 * 1024))
+					{
+						var chain = new SlimChain(network.NBitcoinNetwork.GenesisHash, (int)(((double)file.Length / 32.0) * 1.05));
+						chain.Load(file);
+						getBlocks = new SlimChainGetBlockHeaders(network, chain);
+					}
+				}
+			}
+
+			return getBlocks;
+		}
+
 		private static async Task<TrackedTransaction> ToTrackedTransaction(NBXplorerNetwork network, Repository legacyRepo, Dictionary<string, TrackedSource> hashToTrackedSource, DBTrie.IRow row)
 		{
 			var seg = DBTrie.PublicExtensions.GetUnderlyingArraySegment(await row.ReadValue());
@@ -557,21 +591,6 @@ namespace NBXplorer.HostedServices
 			var trackedSource = hashToTrackedSource[Encoding.UTF8.GetString(row.Key.Span).Split('-')[0]];
 			var tt = legacyRepo.ToTrackedTransaction(trackedSerializable, trackedSource);
 			return tt;
-		}
-
-		private async Task<UpdateBlock> GetBlockHeaderAsync(NBitcoin.RPC.RPCClient rpc, uint256 blk)
-		{
-			var header = await rpc.SendCommandAsync(new NBitcoin.RPC.RPCRequest("getblockheader", new[] { blk.ToString() })
-			{
-				ThrowIfRPCError = false
-			});
-			if (header.Result is null || header.Error is not null)
-				return null;
-			var response = header.Result;
-			var confs = response["confirmations"].Value<long>();
-			if (confs == -1)
-				return null;
-			return new UpdateBlock(rpc.Network.NetworkSet.CryptoCode, blk.ToString(), response["previousblockhash"]?.Value<string>(), response["height"].Value<long>());
 		}
 
 		private static async Task CreateWalletAndDescriptor(System.Data.Common.DbConnection conn, HashSet<PostgresRepository.WalletKey> walletKeys, List<InsertDescriptor> descriptors)
@@ -592,6 +611,79 @@ namespace NBXplorer.HostedServices
 		{
 			if (started)
 				await LegacyRepositoryProvider.StopAsync(cancellationToken);
+		}
+
+		interface IGetBlockHeaders
+		{
+			Task<IList<UpdateBlock>> GetUpdateBlocks(IList<uint256> blockHashes);
+		}
+		class SlimChainGetBlockHeaders : IGetBlockHeaders
+		{
+			public SlimChainGetBlockHeaders(NBXplorerNetwork network, SlimChain slimChain)
+			{
+				Network = network;
+				SlimChain = slimChain;
+			}
+
+			public NBXplorerNetwork Network { get; }
+			public SlimChain SlimChain { get; }
+
+			public Task<IList<UpdateBlock>> GetUpdateBlocks(IList<uint256> blockHashes)
+			{
+				List<UpdateBlock> update = new List<UpdateBlock>(blockHashes.Count);
+				foreach (var hash in blockHashes)
+				{
+					var b = SlimChain.GetBlock(hash);
+					if (b != null)
+					{
+						update.Add(new UpdateBlock(Network.CryptoCode, b.Hash.ToString(), b.Previous?.ToString(), b.Height));
+					}
+				}
+				return Task.FromResult<IList<UpdateBlock>>(update);
+			}
+		}
+		class RPCGetBlockHeaders : IGetBlockHeaders
+		{
+			public RPCGetBlockHeaders(RPCClient rpc)
+			{
+				Rpc = rpc;
+			}
+
+			public RPCClient Rpc { get; }
+
+			public async Task<IList<UpdateBlock>> GetUpdateBlocks(IList<uint256> blockHashes)
+			{
+				var rpc = Rpc.PrepareBatch();
+				List<Task<UpdateBlock>> gettingHeaders = new List<Task<UpdateBlock>>(blockHashes.Count);
+				foreach (var blk in blockHashes)
+				{
+					gettingHeaders.Add(GetBlockHeaderAsync(rpc, blk));
+				}
+				await rpc.SendBatchAsync();
+
+				List<UpdateBlock> update = new List<UpdateBlock>(blockHashes.Count);
+				foreach (var gh in gettingHeaders)
+				{
+					var blockHeader = await gh;
+					if (blockHeader is not null)
+						update.Add(blockHeader);
+				}
+				return update;
+			}
+			private async Task<UpdateBlock> GetBlockHeaderAsync(NBitcoin.RPC.RPCClient rpc, uint256 blk)
+			{
+				var header = await rpc.SendCommandAsync(new NBitcoin.RPC.RPCRequest("getblockheader", new[] { blk.ToString() })
+				{
+					ThrowIfRPCError = false
+				});
+				if (header.Result is null || header.Error is not null)
+					return null;
+				var response = header.Result;
+				var confs = response["confirmations"].Value<long>();
+				if (confs == -1)
+					return null;
+				return new UpdateBlock(rpc.Network.NetworkSet.CryptoCode, blk.ToString(), response["previousblockhash"]?.Value<string>(), response["height"].Value<long>());
+			}
 		}
 	}
 }
