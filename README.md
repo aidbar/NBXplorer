@@ -39,6 +39,7 @@ It currently supports the following altcoins:
 * Gobyte
 * Groestlcoin
 * Litecoin
+* Techcoin
 * Monacoin
 * MonetaryUnit
 * Monoeci

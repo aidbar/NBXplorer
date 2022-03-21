@@ -19,6 +19,10 @@ namespace NBXplorer.Tests
 			//nodeDownloadData = NodeDownloadData.Litecoin.v0_16_3;
 			//Network = NBitcoin.Altcoins.Litecoin.Instance.Regtest;
 
+			//CryptoCode = "TLC";
+			//nodeDownloadData = NodeDownloadData.Techcoin.v0_16_3;
+			//Network = NBitcoin.Altcoins.Techcoin.Instance.Regtest;
+
 			//CryptoCode = "BCH";
 			//nodeDownloadData = NodeDownloadData.BCash.v22_1_0;
 			//NBXplorerNetwork = _Provider.GetBCH();
