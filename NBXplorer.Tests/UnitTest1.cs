@@ -27,6 +27,7 @@ using Microsoft.AspNetCore.Http.Features;
 using NBitcoin.Altcoins;
 using NBitcoin.DataEncoders;
 using Dapper;
+using NBXplorer.Configuration;
 
 namespace NBXplorer.Tests
 {
@@ -1971,6 +1972,55 @@ namespace NBXplorer.Tests
 				transactions = await repo.GetTransactions(new DerivationSchemeTrackedSource(bobPubKey), id);
 				tx = Assert.Single(transactions);
 				Assert.Equal(timestamp, tx.FirstSeen);
+			}
+		}
+
+		[Fact]
+		public async Task CanMigrateToPostgres()
+		{
+			BitcoinExtKey alice;
+			DerivationStrategyBase alicePubKey;
+			uint256 b1;
+			uint256 b2;
+			using (var tester = ServerTester.Create(Backend.DBTrie))
+			{
+				// Alice get 3 utxos: one confirmed in b1, one confirmed in b2, and an unconfirmed
+				alice = new BitcoinExtKey(new ExtKey(), tester.Network);
+				alicePubKey = tester.CreateDerivationStrategy(alice.Neuter());
+				tester.Client.Track(alicePubKey);
+				var id = tester.SendToAddress(tester.AddressOf(alice, "0/1"), Money.Coins(1.0m));
+				tester.Notifications.WaitForTransaction(alicePubKey, id);
+				b1 = tester.RPC.EnsureGenerate(1)[0];
+				tester.Notifications.WaitForTransaction(alicePubKey, id);
+				id = tester.SendToAddress(tester.AddressOf(alice, "0/2"), Money.Coins(0.1m));
+				tester.Notifications.WaitForTransaction(alicePubKey, id);
+				b2 = tester.RPC.EnsureGenerate(1)[0];
+				id = tester.SendToAddress(tester.AddressOf(alice, "0/3"), Money.Coins(0.2m));
+				tester.Notifications.WaitForTransaction(alicePubKey, id);
+
+				tester.KeepPreviousData = true;
+				tester.AdditionalConfiguration.Add(("automigrate", "1"));
+				tester.Backend = Backend.Postgres;
+				// Now imagine b2 is invalid
+				tester.RPC.InvalidateBlock(b2);
+				tester.ResetExplorer(false);
+
+				var txs = await tester.Client.GetTransactionsAsync(alicePubKey);
+				var conf = Assert.Single(txs.ConfirmedTransactions.Transactions);
+				Assert.Equal(b1, conf.BlockHash);
+				// The unconf and the b2's confirmation should be in mempool.
+				Assert.Equal(2, txs.UnconfirmedTransactions.Transactions.Count);
+				var utxos = await tester.Client.GetUTXOsAsync(alicePubKey);
+				Assert.Single(utxos.Confirmed.UTXOs);
+				Assert.Equal(2, utxos.Unconfirmed.UTXOs.Count);
+
+				var explorerConf = tester.GetService<ExplorerConfiguration>();
+				Assert.Equal("Done", File.ReadAllText(Path.Combine(explorerConf.DataDir, "db", "migration_lock")));
+
+				tester.AdditionalConfiguration.Add(("deleteaftermigration", "1"));
+
+				tester.ResetExplorer(false);
+				Assert.False(Directory.Exists(Path.Combine(explorerConf.DataDir, "db")));
 			}
 		}
 

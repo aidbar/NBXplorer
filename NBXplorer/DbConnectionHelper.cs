@@ -137,7 +137,7 @@ namespace NBXplorer
 			var row = await Connection.QueryFirstOrDefaultAsync("SELECT * FROM get_tip(@code);", new { code = Network.CryptoCode });
 			if (row is null)
 				return null;
-			return new SlimChainedBlock(uint256.Parse(row.blk_id), uint256.Parse(row.prev_id), (int)row.height);
+			return new SlimChainedBlock(uint256.Parse(row.blk_id), row.height == 0 ? null : uint256.Parse(row.prev_id), (int)row.height);
 		}
 
 		public async Task<bool> SetMetadata<TMetadata>(string walletId, string key, TMetadata value) where TMetadata : class

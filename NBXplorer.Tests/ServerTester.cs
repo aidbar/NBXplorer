@@ -43,6 +43,10 @@ namespace NBXplorer.Tests
 		{
 			return new ServerTester(Backend.DBTrie, caller, false);
 		}
+		public static ServerTester CreateNoAutoStart(Backend backend, [CallerMemberNameAttribute] string caller = null)
+		{
+			return new ServerTester(backend, caller, false);
+		}
 
 		public void Dispose()
 		{
@@ -134,6 +138,7 @@ namespace NBXplorer.Tests
 
 		public int TrimEvents { get; set; } = -1;
 		public bool UseRabbitMQ { get; set; } = false;
+		public List<(string key, string value)> AdditionalConfiguration { get; set; } = new List<(string key, string value)>();
 		string PostgresConnectionString;
 		private void StartNBXplorer()
 		{
@@ -145,6 +150,7 @@ namespace NBXplorer.Tests
 				PostgresConnectionString ??= GetTestPostgres(null, _Name);
 				keyValues.Add(("postgres", PostgresConnectionString));
 			}
+			keyValues.AddRange(AdditionalConfiguration);
 			keyValues.Add(("datadir", datadir));
 			keyValues.Add(("port", port.ToString()));
 			keyValues.Add(("network", "regtest"));

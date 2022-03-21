@@ -93,7 +93,7 @@ namespace NBXplorer.HostedServices
 
 		private void DeleteAfterMigrationOrWarning()
 		{
-			if (!Configuration.GetValue<bool>("DELETE_AFTER_MIGRATION", false))
+			if (!Configuration.GetOrDefault<bool>("deleteaftermigration", false))
 				Logger.LogWarning($"A legacy DBTrie database has been previously migrated to postgres and is still present. You can safely delete it if you do not expect using it in the future. To delete the old DBTrie database, start NBXplorer with --delete-after-migration (or environment variable: NBXPLORER_DELETE_AFTER_MIGRATION)");
 			else
 			{
